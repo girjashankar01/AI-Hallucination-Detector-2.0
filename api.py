@@ -36,15 +36,13 @@ app = FastAPI(
 app.state.limiter = limiter
 
 # ── Middleware ─────────────────────────────────────────────────────────
-app.add_middleware(SlowAPIMiddleware)
-app.add_middleware(
-    CORSMiddleware,
+app.add_middleware(CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+app.add_middleware(SlowAPIMiddleware)
 # ── Exception handlers ─────────────────────────────────────────────────
 
 # FIX: Register slowapi's handler so rate-limit hits return 429 with a
