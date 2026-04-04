@@ -493,8 +493,9 @@ textarea::placeholder {
     letter-spacing: -0.02em;
 }
 
-.verdict-label.hall { color: var(--red); }
+.verdict-label.hall    { color: var(--red); }
 .verdict-label.grounded { color: var(--green); }
+.verdict-label.mixed   { color: var(--amber); }
 
 .verdict-meta {
     display: flex;
@@ -588,6 +589,25 @@ textarea::placeholder {
     color: var(--t3);
     text-transform: uppercase;
     letter-spacing: 0.08em;
+}
+
+.m-weight {
+    font-family: var(--mono);
+    font-size: 8px;
+    color: var(--t3);
+    opacity: 0.6;
+    letter-spacing: 0;
+    text-transform: none;
+    font-weight: 400;
+}
+
+.method-weight {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--green);
+    opacity: 0.55;
+    font-weight: 400;
+    margin-left: 4px;
 }
 
 .m-val {

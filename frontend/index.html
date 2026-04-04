@@ -31,29 +31,29 @@
             <div class="method-card">
                 <div class="method-icon">◈</div>
                 <div class="method-info">
-                    <span class="method-val">NLI</span>
-                    <span class="method-desc">Natural Language Inference · 40% weight</span>
+                    <span class="method-val">NLI <span class="method-weight">40%</span></span>
+                    <span class="method-desc">Gemini classifies each fact as Entailment / Contradiction / Neutral</span>
                 </div>
             </div>
             <div class="method-card">
                 <div class="method-icon">⟐</div>
                 <div class="method-info">
-                    <span class="method-val">Consistency</span>
-                    <span class="method-desc">Gemini ×2 + BART-MNLI vote · 35% weight</span>
+                    <span class="method-val">Consistency <span class="method-weight">35%</span></span>
+                    <span class="method-desc">Gemini Standard + Adversarial + BART-MNLI weighted vote</span>
                 </div>
             </div>
             <div class="method-card">
                 <div class="method-icon">⊙</div>
                 <div class="method-info">
-                    <span class="method-val">Grounding</span>
-                    <span class="method-desc">Domain source proximity · 15% weight</span>
+                    <span class="method-val">Grounding <span class="method-weight">15%</span></span>
+                    <span class="method-desc">ChromaDB vector distance to nearest source fact</span>
                 </div>
             </div>
             <div class="method-card">
                 <div class="method-icon">⊳</div>
                 <div class="method-info">
-                    <span class="method-val">Embedding</span>
-                    <span class="method-desc">Cosine similarity matching · 10% weight</span>
+                    <span class="method-val">Embedding <span class="method-weight">10%</span></span>
+                    <span class="method-desc">Cosine similarity — domain-specific model per source</span>
                 </div>
             </div>
         </div>
