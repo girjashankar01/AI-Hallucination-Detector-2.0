@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hallucination Detector — AI Verification Tool</title>
+    <meta name="description" content="Wikipedia-grounded factual verification for LLM outputs.">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- NAV -->
+<nav id="navbar">
+    <div class="container nav-row">
+        <div class="nav-brand">
+            <div class="nav-logo">H_</div>
+            <span class="nav-title">Hallucination Detector</span>
+        </div>
+        <span class="nav-pill"><span class="pill-dot"></span>AI Verification Tool</span>
+    </div>
+</nav>
+
+<!-- HERO -->
+<section id="hero">
+    <div class="container hero-grid">
+        <div class="hero-text">
+            <h1>Hallucination<br><span class="green">Detector<span class="blink">_</span></span></h1>
+            <p class="hero-sub">Wikipedia-grounded factual verification for LLM outputs</p>
+        </div>
+        <div class="methods-grid">
+            <div class="method-card">
+                <div class="method-icon">◈</div>
+                <div class="method-info">
+                    <span class="method-val">NLI</span>
+                    <span class="method-desc">Natural Language Inference · 40% weight</span>
+                </div>
+            </div>
+            <div class="method-card">
+                <div class="method-icon">⟐</div>
+                <div class="method-info">
+                    <span class="method-val">Consistency</span>
+                    <span class="method-desc">3× Gemini self-evaluation · 35% weight</span>
+                </div>
+            </div>
+            <div class="method-card">
+                <div class="method-icon">⊙</div>
+                <div class="method-info">
+                    <span class="method-val">Grounding</span>
+                    <span class="method-desc">Wikipedia vector proximity · 15% weight</span>
+                </div>
+            </div>
+            <div class="method-card">
+                <div class="method-icon">⊳</div>
+                <div class="method-info">
+                    <span class="method-val">Embedding</span>
+                    <span class="method-desc">Cosine similarity matching · 10% weight</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- INPUT -->
+<section id="input-section">
+    <div class="container">
+        <div class="input-top">
+            <div class="input-top-left">
+                <label class="field-label" for="inputText">Paste text to verify</label>
+                <button class="icon-btn" id="pasteBtn" title="Paste from clipboard">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="4" rx="1"/><path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2"/></svg>
+                    <span>Paste</span>
+                </button>
+            </div>
+            <span class="char-count" id="charCount">0 / 500</span>
+        </div>
+        <div class="input-row">
+            <textarea id="inputText" placeholder="Enter LLM-generated text here…" maxlength="500"></textarea>
+            <button class="btn-run" id="analyzeBtn" onclick="analyze()">
+                <span class="btn-arrow">→</span>
+                <span class="btn-label">Analyze</span>
+            </button>
+        </div>
+        <div class="input-hint" id="inputHint"></div>
+    </div>
+</section>
+
+<!-- LOADING -->
+<div id="loading">
+    <div class="container loading-row">
+        <div class="load-bar"><div class="load-fill"></div></div>
+        <span class="load-text" id="loadingStep">Inferring topic from text…</span>
+    </div>
+</div>
+
+<!-- RESULTS -->
+<section id="results">
+    <div class="container">
+
+        <!-- Verdict row: gauge + info + progress -->
+        <div class="verdict-row" id="verdictRow">
+            <div class="gauge-wrap" id="gaugeWrap">
+                <!-- JS fills SVG gauge -->
+            </div>
+            <div class="verdict-info">
+                <span class="verdict-label" id="verdictLabel"></span>
+                <div class="verdict-meta" id="verdictMeta"></div>
+            </div>
+        </div>
+
+        <!-- Overall horizontal bar -->
+        <div class="overall-bar-wrap" id="overallBarWrap">
+            <div class="overall-bar-track">
+                <div class="overall-bar-fill" id="overallBarFill"></div>
+            </div>
+            <span class="overall-bar-pct" id="overallBarPct"></span>
+        </div>
+
+        <!-- 4 metric breakdown -->
+        <div class="metric-row" id="metricRow"></div>
+
+        <!-- Sentence analysis -->
+        <div class="sentence-section">
+            <div class="sentence-head">
+                <h3 class="sentence-title">Sentence Analysis</h3>
+                <div class="sentence-head-right">
+                    <span class="sentence-count" id="sentenceCount"></span>
+                    <button class="icon-btn" id="copyBtn" title="Copy results to clipboard">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                        <span id="copyLabel">Copy</span>
+                    </button>
+                </div>
+            </div>
+            <div id="sentenceList"></div>
+        </div>
+
+    </div>
+</section>
+
+<!-- ERROR TOAST -->
+<div id="errorToast" class="toast">
+    <span class="toast-icon">!</span>
+    <span class="toast-msg" id="errorMsg"></span>
+</div>
+
+<script src="script.js"></script>
+</body>
+</html>
