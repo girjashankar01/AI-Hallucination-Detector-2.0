@@ -48,8 +48,10 @@ def build_collection(
     embed_fn = embed_fn or default_embed
 
     # domain prefix isolates collections per embedding model
-    safe_topic = topic.lower().replace(" ", "_")[:20].rstrip("_")
+    import re
+    safe_topic = re.sub(r'[^a-zA-Z0-9._-]', '_', topic.lower().replace(" ", "_"))[:20].rstrip("_-")
     safe_name  = f"facts_{domain}_{safe_topic}"
+
     collection = _client.get_or_create_collection(name=safe_name)
 
     if collection.count() == 0:

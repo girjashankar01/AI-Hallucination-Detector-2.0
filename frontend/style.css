@@ -911,10 +911,45 @@ textarea::placeholder {
     .sc-chev { display: none; }
 }
 
+/* ───── DOMAIN BADGE ───── */
+/* Sits in the verdict-meta row as a v-tag with colour override */
+.domain-badge {
+    font-family: var(--mono);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.domain-medical    { color: #5dcaa5; background: rgba(0,180,120,0.10); }
+.domain-legal      { color: #afa9ec; background: rgba(100,80,220,0.10); }
+.domain-financial  { color: var(--amber); background: var(--amber-bg); }
+.domain-general    { color: var(--t2); background: var(--s3); }
+
+/* ───── SOURCE CITATION LINK ───── */
+.src-link {
+    display: inline-block;
+    margin-top: 6px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--green);
+    text-decoration: none;
+    opacity: 0.65;
+    transition: opacity 0.15s;
+}
+
+.src-link:hover { opacity: 1; text-decoration: underline; }
+
+.src-label {
+    display: inline-block;
+    margin-top: 6px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--t3);
+}
+
 /* ───── SCROLLBAR / SELECTION ───── */
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.05); border-radius: 4px; }
 ::selection { background: rgba(0,255,136,0.15); }
-
-

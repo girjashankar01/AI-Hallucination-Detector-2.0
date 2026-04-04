@@ -1,4 +1,4 @@
-const API = 'https://ai-hallucination-detector-production.up.railway.app';
+const API = 'http://localhost:8000';
 const $ = id => document.getElementById(id);
 
 const textarea = $('inputText');
@@ -33,7 +33,7 @@ $('copyBtn').addEventListener('click', (e) => {
     const lines = [
         `Hallucination Detector — Results`,
         `Overall: ${d.overall_score} (${d.overall_label})`,
-        `Topic: ${d.topic}`,
+        `Domain: ${d.domain} | Topic: ${d.topic}`,
         `${d.hallucinated_count} hallucinated, ${d.grounded_count} grounded, ${d.sentence_count} sentences`,
         '',
         ...d.results.map((r, i) =>
@@ -216,6 +216,7 @@ function render(data) {
 
     // meta tags
     $('verdictMeta').innerHTML = `
+        <span class="v-tag domain-badge domain-${data.domain}">${data.domain}</span>
         <span class="v-tag">${data.topic}</span>
         <span class="v-tag"><span class="v-dot r"></span>${data.hallucinated_count} hallucinated</span>
         <span class="v-tag"><span class="v-dot g"></span>${data.grounded_count} grounded</span>
@@ -285,12 +286,16 @@ function render(data) {
                     ${mCell('NLI', item.nli_score)}
                 </div>
                 <div class="sc-block">
-                    <div class="sc-block-title">Closest Wikipedia Fact</div>
+                    <div class="sc-block-title">Closest Source Fact</div>
                     <div class="sc-block-body">${item.evidence}</div>
+                    ${item.evidence_url
+                        ? `<a href="${item.evidence_url}" target="_blank" class="src-link">${item.evidence_source || 'Source'}</a>`
+                        : (item.evidence_source ? `<span class="src-label">${item.evidence_source}</span>` : '')
+                    }
                 </div>
                 <div class="sc-block">
-                    <div class="sc-block-title">Gemini Responses (×3)</div>
-                    ${item.consistency_responses.map(r => `<div class="sc-resp">${r}</div>`).join('')}
+                    <div class="sc-block-title">Consistency Responses</div>
+                    ${(item.consistency_responses || []).map(r => `<div class="sc-resp">${r}</div>`).join('')}
                 </div>
                 <div class="sc-block">
                     <div class="sc-block-title">NLI Classification</div>
