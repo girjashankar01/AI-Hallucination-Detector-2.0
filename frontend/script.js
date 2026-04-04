@@ -1,7 +1,6 @@
 // Auto-detect local dev vs production
-const API = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-    ? 'http://localhost:8000'
-    : 'https://ai-hallucination-detector-production.up.railway.app';
+const API = 'http://127.0.0.1:8000';
+    
 
 const $ = id => document.getElementById(id);
 
