@@ -12,7 +12,7 @@ from core.vector_store      import build_collection, retrieve_closest
 from core.consistency       import check_consistency
 from core.nli               import check_nli, check_nli_batch
 from core.domain_classifier import classify_domain
-from core.domain_embedder   import get_embed_fn
+from core.domain_embedder   import get_embed_fn, batch_embed_for_domain
 from core.sources           import fetch_facts_for_domain
 
 load_dotenv()
@@ -46,7 +46,7 @@ def split_sentences(text: str) -> list[str]:
 def score_sentence(
     sentence:    str,
     collection,
-    embed_fn,                           # NEW — domain-bound callable
+    embed_fn,                           # domain-bound callable
     _embedding:  list       | None = None,
     _closest:    list       | None = None,
     _nli_result: dict       | None = None,
@@ -118,8 +118,8 @@ def score_sentence(
         "nli_score":             nli_score,
         "nli_verdict":           nli_result["verdict"],
         "evidence":              closest[0]["fact"],
-        "evidence_source":       closest[0]["source"],    # NEW
-        "evidence_url":          closest[0]["url"],       # NEW
+        "evidence_source":       closest[0]["source"],
+        "evidence_url":          closest[0]["url"],
         "evidence_distance":     closest[0]["distance"],
         "top_facts":             closest,
         "contradicting_fact":    nli_result["contradicting_fact"],
@@ -140,16 +140,18 @@ def analyze_text(text: str) -> dict:
     2.  Infer Wikipedia/source topic
     3.  Fetch facts from domain-appropriate source (with fallbacks)
     4.  Build domain-specific embed_fn via get_embed_fn(domain)
-    5.  Build ChromaDB collection using embed_fn
+    5.  Build ChromaDB collection using batch_embed_for_domain (1 API call)
     6.  Pre-compute embeddings + closest facts for all sentences
     7.  Batch NLI (1 API call)
     8.  Score each sentence
     9.  Aggregate
 
-    Key change from Module D scorer:
-        embed_fn is created once from the domain and threaded through
-        build_collection, retrieve_closest, and score_sentence.
-        This guarantees vector space consistency (same model for build + query).
+    Key changes from original Module E scorer:
+    - embed_batch_fn passed to build_collection → batch embeds facts in 1 call
+      instead of 25 sequential calls (fixes the "25 sequential Gemini embed" bug).
+    - overall_label now distinguishes "mixed" from "fully hallucinated" —
+      a single hallucinated sentence in multi-sentence input is now flagged.
+    - evidence_url is surfaced in the test output (was computed but not printed).
     """
 
     # ── Step 1: Classify domain ────────────────────────────────────────
@@ -169,10 +171,15 @@ def analyze_text(text: str) -> dict:
             "domain": domain,
         }
 
-    # ── Step 4: Create domain-bound embed function ─────────────────────
-    # CRITICAL: this callable is used for BOTH building and querying the
-    # collection. Never split them (e.g. build with PubMedBERT, query with Gemini).
-    embed_fn = get_embed_fn(domain)
+    # ── Step 4: Create domain-bound embed functions ────────────────────
+    # embed_fn:       single-text callable, used for query embeddings
+    # embed_batch_fn: multi-text callable, used for building the collection
+    #
+    # CRITICAL: both must use the same underlying model.
+    # embed_batch_fn = lambda texts: batch_embed_for_domain(texts, domain)
+    # This passes domain through to the correct local model (or Gemini batch).
+    embed_fn       = get_embed_fn(domain)
+    embed_batch_fn = lambda texts: batch_embed_for_domain(texts, domain)
     print(f"[scorer] embed_fn bound to domain='{domain}'")
 
     # ── Step 5: Split sentences ────────────────────────────────────────
@@ -184,8 +191,14 @@ def analyze_text(text: str) -> dict:
             "domain": domain,
         }
 
-    # ── Step 6: Build vector store ─────────────────────────────────────
-    collection = build_collection(topic, facts, embed_fn, domain=domain)
+    # ── Step 6: Build vector store (batch embed — 1 API call for all facts) ──
+    collection = build_collection(
+        topic,
+        facts,
+        embed_fn,
+        domain=domain,
+        embed_batch_fn=embed_batch_fn,   # FIX: was N sequential calls, now 1 batch call
+    )
 
     # ── Step 7: Pre-compute embeddings + closest ───────────────────────
     print(f"\n[scorer] Pre-computing embeddings for {len(sentences)} sentence(s)...")
@@ -219,12 +232,12 @@ def analyze_text(text: str) -> dict:
         result = score_sentence(
             d["sentence"],
             collection,
-            embed_fn,                          # pass domain embed_fn
+            embed_fn,
             _embedding  = d["embedding"],
             _closest    = d["closest"],
             _nli_result = nli_results[i],
         )
-        result["domain"] = domain             # attach domain to each result
+        result["domain"] = domain
         results.append(result)
         print(f"[scorer]    final={result['final_score']}  "
               f"nli={result['nli_verdict']}  "
@@ -235,11 +248,21 @@ def analyze_text(text: str) -> dict:
     # ── Step 10: Aggregate ─────────────────────────────────────────────
     hallucinated  = [r for r in results if r["label"] == "hallucinated"]
     overall_score = round(sum(r["final_score"] for r in results) / len(results), 4)
-    overall_label = "likely hallucinated" if overall_score < 0.50 else "mostly grounded"
+
+    # FIX: original used a simple score threshold → "likely hallucinated" only
+    # when ALL sentences averaged below 0.50. This masked mixed-sentence inputs
+    # where 1 sentence is hallucinated and 1 is grounded → score ~0.60 → "grounded".
+    # New logic: flag ANY hallucination in the set explicitly.
+    if len(hallucinated) == len(results):
+        overall_label = "likely hallucinated"
+    elif hallucinated:
+        overall_label = f"mixed — {len(hallucinated)}/{len(results)} sentence(s) hallucinated"
+    else:
+        overall_label = "mostly grounded"
 
     return {
         "topic":              topic,
-        "domain":             domain,           # NEW
+        "domain":             domain,
         "overall_score":      overall_score,
         "overall_label":      overall_label,
         "sentence_count":     len(results),
@@ -292,9 +315,6 @@ if __name__ == "__main__":
 
     for i, (desc, text, expected_domain) in enumerate(cases):
         if i > 0:
-            # Free-tier Gemini: 15 RPM for gemini-3.1-flash-lite.
-            # Each test case fires ~5 Gemini calls (infer_topic + consistency x3 + NLI batch).
-            # 5 cases x 5 calls = 25 calls; sleep 5s between cases keeps us ~12 RPM.
             print(f"\n[scorer] Sleeping 5s between tests (free-tier RPM guard)...")
             time.sleep(2)
         header(f"TEST: {desc}")
@@ -307,7 +327,12 @@ if __name__ == "__main__":
             print(f"  Domain:   {out['domain']}  {domain_check}")
             print(f"  Overall:  {out['overall_score']}  →  {out['overall_label']}")
             for r in out["results"]:
-                icon = "🔴" if r["label"] == "hallucinated" else "🟢"
-                src  = f"[{r['evidence_source']}]"
+                icon   = "🔴" if r["label"] == "hallucinated" else "🟢"
+                src    = f"[{r['evidence_source']}]"
+                url    = r.get("evidence_url", "")
+                # FIX: evidence_url was computed and stored but never printed.
+                # Now shown below each sentence result for verification.
                 print(f"  {icon} [{r['final_score']}] nli={r['nli_verdict']} "
                       f"con={r['consistency_score']} {src} | {r['sentence'][:60]}")
+                if url:
+                    print(f"       📎 {url}")

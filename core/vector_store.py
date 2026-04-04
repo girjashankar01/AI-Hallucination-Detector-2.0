@@ -9,17 +9,17 @@ _client = chromadb.Client()
 
 
 def build_collection(
-    topic:    str,
-    facts:    list[dict],   # list[{"text": str, "source": str, "url": str}]
-    embed_fn  = None,       # callable(text: str) -> list[float]
-                            # If None: uses Gemini (default_embed)
-                            # Module E passes get_embed_fn(domain) here
-    domain:   str = "general",  # NEW — included in collection name to prevent
-                                 # dimension collisions across domains for same topic.
-                                 # Without this: "facts_albert_einstein" built with
-                                 # InLegalBert (768-dim) gets reused when the same
-                                 # topic is re-scored as "general" (Gemini, 3072-dim)
-                                 # → chromadb.InvalidArgumentError at query time.
+    topic:          str,
+    facts:          list[dict],   # list[{"text": str, "source": str, "url": str}]
+    embed_fn        = None,       # callable(text: str) -> list[float]
+                                  # If None: uses Gemini (default_embed)
+                                  # Module E passes get_embed_fn(domain) here
+    domain:         str = "general",  # Included in collection name to prevent
+                                       # dimension collisions across domains for same topic.
+    embed_batch_fn  = None,       # NEW — optional callable(texts: list[str]) -> list[list[float]]
+                                  # When provided, used instead of N sequential embed_fn calls.
+                                  # Reduces 25 Gemini API calls → 1 for the general domain.
+                                  # Module E passes: lambda texts: batch_embed_for_domain(texts, domain)
 ) -> object:
     """
     Creates (or retrieves) a ChromaDB collection for a topic and
@@ -33,6 +33,13 @@ def build_collection(
         MUST match the embed_fn passed to retrieve_closest() for the same collection.
         Using different functions for build vs query produces wrong similarity scores.
 
+    embed_batch_fn: optional batch version of embed_fn.
+        If provided, all fact embeddings are computed in ONE call instead of N calls.
+        This is the fix for the "25 sequential Gemini embed calls" issue — the general
+        domain now passes batch_embed_for_domain(texts, "general") which uses
+        the Gemini batch API (1 call for N facts).
+        embed_fn is still required for retrieve_closest() (single-query embedding).
+
     domain: used only to namespace the collection name — prevents the singleton
         _client from returning a stale 768-dim collection when the domain changes.
 
@@ -41,7 +48,6 @@ def build_collection(
     embed_fn = embed_fn or default_embed
 
     # domain prefix isolates collections per embedding model
-    # "facts_general_albert_einstein" vs "facts_legal_albert_einstein" are separate
     safe_topic = topic.lower().replace(" ", "_")[:20].rstrip("_")
     safe_name  = f"facts_{domain}_{safe_topic}"
     collection = _client.get_or_create_collection(name=safe_name)
@@ -52,8 +58,14 @@ def build_collection(
         urls      = [f.get("url",    "")         for f in facts]
         metadatas = [{"source": s, "url": u} for s, u in zip(sources, urls)]
 
-        print(f"[vector_store] Building '{safe_name}' — embedding {len(texts)} facts...")
-        embeddings = [embed_fn(t) for t in texts]
+        if embed_batch_fn is not None:
+            # Batch path: 1 API call for all facts
+            print(f"[vector_store] Building '{safe_name}' — batch embedding {len(texts)} facts (1 API call)...")
+            embeddings = embed_batch_fn(texts)
+        else:
+            # Sequential path: N API calls (fallback when no batch fn provided)
+            print(f"[vector_store] Building '{safe_name}' — embedding {len(texts)} facts sequentially...")
+            embeddings = [embed_fn(t) for t in texts]
 
         collection.add(
             documents  = texts,

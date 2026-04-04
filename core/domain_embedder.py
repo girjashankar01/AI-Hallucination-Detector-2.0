@@ -31,7 +31,7 @@ import torch
 from transformers import AutoTokenizer, AutoModel
 from dotenv import load_dotenv
 
-from core.embedder import embed as gemini_embed   # Gemini fallback + general domain
+from core.embedder import embed as gemini_embed, embed_batch as gemini_embed_batch
 
 load_dotenv()
 
@@ -230,6 +230,11 @@ def batch_embed_for_domain(texts: list[str], domain: str) -> list[list[float]]:
         Sequential: 12-20 forward passes.
         Batch: 1 forward pass — significantly faster.
 
+    FIX (Module E bug): "general" domain previously used a sequential loop
+    because the comment said "Gemini doesn't support batching in the new SDK".
+    The Gemini SDK DOES support batch via contents=[list], using embed_batch()
+    from embedder.py. This reduces 25 sequential API calls → 1 batch call.
+
     Args:
         texts:  list of strings to embed
         domain: "medical" | "legal" | "financial" | "general"
@@ -242,10 +247,15 @@ def batch_embed_for_domain(texts: list[str], domain: str) -> list[list[float]]:
 
     model_id = DOMAIN_MODELS.get(domain)
 
-    # "general": Gemini doesn't support batching in the new SDK → sequential
+    # "general": use Gemini batch API (1 call instead of N sequential calls)
+    # FIX: was previously a sequential loop — embed_batch() fixes this
     if model_id is None:
-        print(f"[domain_embedder] general batch: {len(texts)} texts → Gemini sequential")
-        return [list(gemini_embed(t)) for t in texts]
+        print(f"[domain_embedder] general batch: {len(texts)} texts → Gemini batch API (1 call)")
+        try:
+            return gemini_embed_batch(texts)
+        except Exception as e:
+            print(f"[domain_embedder] Gemini batch failed ({e}), falling back to sequential")
+            return [list(gemini_embed(t)) for t in texts]
 
     # Try batched local inference
     print(f"[domain_embedder] Batching {len(texts)} texts for domain '{domain}'...")
@@ -350,6 +360,32 @@ if __name__ == "__main__":
     )
     print(f"  Status:  {batch_status}")
 
+    # ── TEST 2b: Batch embed — general domain (Gemini batch) ──────────
+    header("TEST 2b: Batch embed — general domain (Gemini batch API)")
+
+    general_facts = [
+        "Albert Einstein was a German-born theoretical physicist.",
+        "He developed the theory of general relativity.",
+        "Einstein received the Nobel Prize in Physics in 1921.",
+    ]
+
+    print(f"\nEmbedding {len(general_facts)} general facts via Gemini batch API...")
+    start = time.time()
+    general_batch = batch_embed_for_domain(general_facts, "general")
+    elapsed = round(time.time() - start, 2)
+
+    print(f"\nGeneral batch result:")
+    print(f"  Count:   {len(general_batch)} embeddings")
+    print(f"  Dim:     {len(general_batch[0])} per embedding")
+    print(f"  Time:    {elapsed}s (vs ~{elapsed * len(general_facts):.1f}s sequential)")
+
+    general_batch_status = (
+        "PASS" if len(general_batch) == len(general_facts)
+              and all(len(e) == 3072 for e in general_batch)
+        else "FAIL"
+    )
+    print(f"  Status:  {general_batch_status}")
+
 
     # ── TEST 3: Domain similarity comparison ──────────────────────────
     header("TEST 3: Similarity comparison — domain model vs Gemini")
@@ -437,6 +473,7 @@ if __name__ == "__main__":
     print(f"{'═' * 65}")
     print("  Test 1: Single embed per domain           — check dims above")
     print("  Test 2: Batch embed medical               — check count/dim above")
+    print("  Test 2b: Batch embed general (Gemini)     — check count/dim above")
     print("  Test 3: Domain vs Gemini similarity       — check comparison above")
     print("  Test 4: get_embed_fn interface            — check PASS above")
     print("  Test 5: Cross-domain sanity               — check similarity above")

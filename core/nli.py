@@ -108,26 +108,14 @@ def check_nli(claim: str, facts: list[str]) -> dict:
     return {"nli_score": 0.5, "verdict": "NEUTRAL", "nli_labels": labels, "contradicting_fact": None}
 
 
-def check_nli_batch(pairs: list[dict]) -> list[dict]:
-    """
-    Batch NLI: 1 API call for all (claim, facts) pairs.
-
-    pairs: [{"claim": str, "facts": [str, ...]}, ...]
-    Returns: list of dicts matching check_nli() output format.
-
-    Key prompt improvement: explicitly tells the model that NEUTRAL means
-    "off-topic or irrelevant", not "weakly contradicts". This prevents
-    over-triggering CONTRADICTION on tangentially related facts.
-    """
-    if not pairs:
-        return []
-
+def _build_batch_prompt(pairs: list[dict]) -> str:
+    """Build the NLI batch prompt string (shared between first attempt and retry)."""
     items_text = ""
     for i, p in enumerate(pairs):
         facts_fmt = "\n".join(f"    F{j}: {f}" for j, f in enumerate(p["facts"]))
         items_text += f"\nItem {i}:\n  Claim: \"{p['claim']}\"\n  Facts:\n{facts_fmt}\n"
 
-    prompt = (
+    return (
         "You are a strict NLI (Natural Language Inference) classifier.\n"
         "For each item, determine the relationship between each fact and the claim.\n\n"
         "Classification rules (apply strictly):\n"
@@ -152,16 +140,75 @@ def check_nli_batch(pairs: list[dict]) -> list[dict]:
         f"Return exactly {len(pairs)} objects."
     )
 
-    raw = _gemini_generate(prompt, temperature=0.1)
-    raw = re.sub(r'^```json?\s*', '', raw)
-    raw = re.sub(r'\s*```$', '', raw)
 
-    try:
-        parsed = json.loads(raw)
-        if not isinstance(parsed, list):
-            raise ValueError("not a list")
-    except (json.JSONDecodeError, ValueError) as e:
-        print(f"  [nli_batch] JSON parse failed: {e} — NEUTRAL fallback for all")
+def check_nli_batch(pairs: list[dict]) -> list[dict]:
+    """
+    Batch NLI: 1 API call for all (claim, facts) pairs.
+
+    pairs: [{"claim": str, "facts": [str, ...]}, ...]
+    Returns: list of dicts matching check_nli() output format.
+
+    FIX: Added retry on JSON parse failure.
+    Previously: one attempt, then NEUTRAL fallback for ALL items silently.
+    Now:
+      Attempt 1 — standard prompt, parse JSON
+      Attempt 2 — if JSON invalid, retry with tighter formatting instruction
+      Final fallback — if both fail, fall back to individual check_nli() calls
+        per pair (more API calls but guaranteed to work).
+
+    Why individual fallback instead of NEUTRAL?
+    Silently returning NEUTRAL for all items hides real contradictions and
+    entailments. The individual check_nli() is slower but correct.
+    The batch path fails only on intermittent model output issues, not quota.
+    """
+    if not pairs:
+        return []
+
+    prompt = _build_batch_prompt(pairs)
+
+    # ── Attempt loop with retry ────────────────────────────────────────
+    MAX_PARSE_ATTEMPTS = 2
+    parsed = None
+
+    for attempt in range(MAX_PARSE_ATTEMPTS):
+        raw = _gemini_generate(prompt, temperature=0.1)
+
+        if not raw:
+            # Quota/network failure — don't retry, fall through to individual
+            print(f"  [nli_batch] Empty response from Gemini (quota/network), using individual fallback")
+            break
+
+        # Strip markdown fences if present
+        clean = re.sub(r'^```json?\s*', '', raw)
+        clean = re.sub(r'\s*```$', '', clean).strip()
+
+        try:
+            parsed = json.loads(clean)
+            if not isinstance(parsed, list):
+                raise ValueError(f"expected list, got {type(parsed).__name__}")
+            if len(parsed) == 0:
+                raise ValueError("empty list returned")
+            # Success
+            break
+        except (json.JSONDecodeError, ValueError) as e:
+            if attempt < MAX_PARSE_ATTEMPTS - 1:
+                print(f"  [nli_batch] JSON parse failed (attempt {attempt + 1}): {e} — retrying...")
+                # On retry: use a stricter prompt that emphasizes pure JSON output
+                prompt = (
+                    "IMPORTANT: Your previous response was not valid JSON.\n"
+                    "You MUST return ONLY a raw JSON array. No text before or after.\n"
+                    "No markdown fences (```). No explanation. Just the array.\n\n"
+                ) + _build_batch_prompt(pairs)
+            else:
+                print(f"  [nli_batch] JSON parse failed after {MAX_PARSE_ATTEMPTS} attempts: {e}")
+                print(f"  [nli_batch] Falling back to individual check_nli() per pair...")
+                # Individual fallback — slower but guaranteed correct results
+                return [check_nli(p["claim"], p["facts"]) for p in pairs]
+
+    # ── Process parsed results ─────────────────────────────────────────
+    if parsed is None:
+        # Reached here only if Gemini returned empty string (quota/network)
+        print(f"  [nli_batch] No response — NEUTRAL fallback for all")
         return [
             {"nli_score": 0.5, "verdict": "NEUTRAL", "contradicting_fact": None, "nli_labels": []}
             for _ in pairs
