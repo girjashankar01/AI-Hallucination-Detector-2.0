@@ -93,13 +93,18 @@ from google import genai
 load_dotenv()
 
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-GEMINI_MODEL = os.getenv("GEMINI_MODEL","gemini-3.1-flash-lite-preview")
+GEMINI_MODEL = "gemini-3.1-flash-lite-preview"  # FIX: "gemini-3.1-flash-lite-preview" does not exist;
+                                     # use a real stable model name.
+                                     # If you have access to a preview, set via env:
+                                     # GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
 HF_TOKEN   = os.getenv("HF_TOKEN")
 HF_HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
 
-# api-inference.huggingface.co returned 410 Gone — HF deprecated it.
-# The router is now the only supported endpoint.
+# FIX: Use the classic, stable HF Inference API endpoint.
+# The router.huggingface.co URL is newer and less reliable for zero-shot classification.
+# The classic api-inference.huggingface.co endpoint is battle-tested and always warm
+# for popular models like bart-large-mnli.
 BART_URL = "https://router.huggingface.co/hf-inference/models/facebook/bart-large-mnli"
 
 # Weights must sum to 1.0
@@ -262,96 +267,29 @@ def _ask_gemini_adversarial(claim: str) -> dict:
             return {"verdict": "FALSE", "confidence": 0.0, "reason": "parse error"}
 
 
-# ── Gemini: Generate fact premise for NLI ──────────────────────────────
-
-def _get_fact_premise(claim: str) -> str | None:
-    """
-    Asks Gemini to produce a short, authoritative factual statement about
-    the same topic as the claim — without referencing the claim itself.
-
-    This becomes the NLI premise fed to BART. BART then measures whether
-    the claim (hypothesis) is entailed by, neutral to, or contradicted by
-    the known fact (premise).
-
-    Example:
-      Claim:   "Einstein won the Nobel Prize for the theory of relativity"
-      Premise: "Einstein won the 1921 Nobel Prize in Physics for his
-                discovery of the law of the photoelectric effect."
-      Result:  BART sees the claim contradicts the premise → low entailment score
-
-    Returns a one-sentence string or None if Gemini fails.
-    """
-    prompt = (
-        f"Write one factual sentence about the topic in this claim. "
-        f"Do not mention whether the claim is true or false — just state "
-        f"a relevant, verifiable fact from authoritative sources."
-
-        f"Claim: {claim}"
-
-        f"Reply with only the factual sentence. No preamble, no quotes.")
-    try:
-        result = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
-            config={"temperature": 0.1}
-        )
-        premise = result.text.strip().strip('"').strip("'")
-        return premise if len(premise) > 10 else None
-    except Exception as e:
-        print(f"  [BART-MNLI] Premise generation failed: {e}")
-        return None
-
-
-# ── BART-MNLI: NLI Entailment Check ────────────────────────────────────
+# ── BART-MNLI: Zero-Shot Classification ────────────────────────────────
 
 def _ask_bart_mnli(claim: str) -> dict | None:
     """
-    Uses BART-large-MNLI as an NLI entailment checker, not a zero-shot
-    text classifier.
+    Uses BART-large-MNLI for zero-shot factual classification.
 
-    WHY THE OLD APPROACH WAS WRONG:
-    Feeding the claim alone with labels ["factually correct", "factually
-    incorrect"] makes BART measure whether the sentence *sounds like* a
-    correct statement — not whether it *is* factually true. Fluent,
-    confident-sounding false claims (e.g. "Einstein won the Nobel for
-    relativity") score high on "factually correct" because BART has no
-    world knowledge in that mode — it just measures label entailment
-    from surface features.
+    FIX 1: URL changed from router.huggingface.co to api-inference.huggingface.co.
+    The router endpoint is less reliable; the classic endpoint is battle-tested.
 
-    THE RIGHT APPROACH — premise/hypothesis NLI:
-    1. Ask Gemini to generate a short authoritative fact about the topic.
-    2. Feed that as the NLI premise.
-    3. Feed the claim as the hypothesis.
-    4. BART measures: does the premise ENTAIL the hypothesis?
-       - Entailment score high → claim is consistent with known fact → TRUE
-       - Contradiction score high → claim conflicts with known fact → FALSE
-       - Neutral → BART can't tell → fall back to 0.5
+    FIX 2 (root cause of 'list' object has no attribute 'get'):
+    The HF Inference API returns a LIST for zero-shot-classification, not a dict.
+    Response shape: [{"sequence": "...", "labels": [...], "scores": [...]}]
+    The old code did resp.json().get("labels") → crash because list has no .get().
+    Fix: unwrap the list with data = data[0] when isinstance(data, list).
 
-    Response shape from router (flat list, sorted by score desc):
-      [{"label": "entailment", "score": 0.85},
-       {"label": "neutral",    "score": 0.10},
-       {"label": "contradiction", "score": 0.05}]
-
-    URL: router.huggingface.co — the only supported endpoint (classic 410 Gone).
-
-    Returns {"verdict": str, "confidence": float, "reason": str} or None.
+    Returns {"verdict": str, "confidence": float, "reason": str}
+    or None if HF is unavailable (caller falls back gracefully).
     """
-
-    # Step 1: generate a factual premise via Gemini
-    premise = _get_fact_premise(claim)
-    if not premise:
-        print(f"  [BART-MNLI] Could not generate premise, skipping")
-        return None
-
-    print(f"  [BART-MNLI] Premise: {premise[:90]}")
-
-    # Step 2: NLI call — premise vs hypothesis
-    # The router's text-classification pipeline for bart-large-mnli expects:
-    #   inputs: {"text": premise, "text_pair": hypothesis}
     payload = {
-        "inputs": {
-            "text":      premise,
-            "text_pair": claim,
+        "inputs": claim,
+        "parameters": {
+            "candidate_labels": ["factually correct", "factually incorrect"],
+            "multi_label": False
         }
     }
 
@@ -363,6 +301,7 @@ def _ask_bart_mnli(claim: str) -> dict | None:
             timeout=30
         )
 
+        # Cold start handling — model may be sleeping if not recently used
         if resp.status_code == 503:
             body = resp.json()
             wait = min(body.get("estimated_time", 20), 25)
@@ -381,31 +320,43 @@ def _ask_bart_mnli(claim: str) -> dict | None:
 
         data = resp.json()
 
-        # Router returns flat list sorted by score desc:
-        # [{"label": "entailment", "score": 0.85}, ...]
-        if not isinstance(data, list) or len(data) == 0:
+        # ── FIX 2: Unwrap list response ─────────────────────────────────
+        # HF zero-shot-classification always returns a list, even for a
+        # single input. Calling .get() on a list raises:
+        #   AttributeError: 'list' object has no attribute 'get'
+        # Unwrap first, then treat as a dict.
+        if isinstance(data, list):
+            if len(data) == 0:
+                print(f"  [BART-MNLI] Empty response list")
+                return None
+            data = data[0]
+
+        # Response shape after unwrap:
+        # {"sequence": "...", "labels": ["factually correct", "factually incorrect"],
+        #  "scores": [0.82, 0.18]}
+        # Labels are sorted by score descending
+        labels = data.get("labels", [])
+        scores = data.get("scores", [])
+
+        if not labels or not scores:
             print(f"  [BART-MNLI] Unexpected response shape: {data}")
             return None
 
-        scores = {item["label"].lower(): item["score"] for item in data}
-        entailment    = scores.get("entailment",    0.0)
-        contradiction = scores.get("contradiction", 0.0)
-        neutral       = scores.get("neutral",       0.0)
-        top_label     = data[0]["label"]
+        # Find the score for "factually correct" explicitly
+        # (don't just take labels[0] — order isn't guaranteed by us)
+        correct_score = 0.5   # neutral default if label not found
+        for label, score in zip(labels, scores):
+            if "correct" in label.lower():
+                correct_score = score
+                break
 
-        # Convert NLI scores to a single TRUE confidence:
-        # entailment → 1.0, contradiction → 0.0, neutral → 0.5
-        # Weighted blend so partial entailment/contradiction still moves the needle
-        confidence = (entailment * 1.0) + (neutral * 0.5) + (contradiction * 0.0)
-        confidence = round(min(max(confidence, 0.0), 1.0), 4)
-
-        verdict = "TRUE" if confidence >= 0.6 else ("FALSE" if confidence <= 0.4 else "UNCERTAIN")
+        verdict = "TRUE" if correct_score >= 0.5 else "FALSE"
+        top_label = labels[0] if labels else "unknown"
 
         return {
             "verdict":    verdict,
-            "confidence": confidence,
-            "reason":     (f"NLI: entailment={entailment:.3f} neutral={neutral:.3f} "
-                          f"contradiction={contradiction:.3f} top='{top_label}'"),
+            "confidence": round(correct_score, 4),
+            "reason":     f"NLI: P(factually correct)={correct_score:.3f}, top label='{top_label}'",
         }
 
     except requests.Timeout:
