@@ -2,6 +2,7 @@
 
 import re
 import os
+import time
 from dotenv import load_dotenv
 from google import genai
 
@@ -289,7 +290,13 @@ if __name__ == "__main__":
         ),
     ]
 
-    for desc, text, expected_domain in cases:
+    for i, (desc, text, expected_domain) in enumerate(cases):
+        if i > 0:
+            # Free-tier Gemini: 15 RPM for gemini-3.1-flash-lite.
+            # Each test case fires ~5 Gemini calls (infer_topic + consistency x3 + NLI batch).
+            # 5 cases x 5 calls = 25 calls; sleep 5s between cases keeps us ~12 RPM.
+            print(f"\n[scorer] Sleeping 5s between tests (free-tier RPM guard)...")
+            time.sleep(2)
         header(f"TEST: {desc}")
         out = analyze_text(text)
         if "error" in out:

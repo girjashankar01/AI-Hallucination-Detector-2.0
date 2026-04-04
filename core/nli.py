@@ -3,12 +3,49 @@
 import os
 import re
 import json
+import time
 from dotenv import load_dotenv
 from google import genai
 
 load_dotenv()
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 MODEL_ID = "gemini-3.1-flash-lite-preview"
+
+
+def _gemini_generate(prompt: str, temperature: float = 0.1, retries: int = 4) -> str:
+    """
+    Wrapper around client.models.generate_content with exponential backoff on 429.
+
+    Free tier limit: 15 RPM for gemini-3.1-flash-lite.
+    Running 5 test cases sequentially fires ~25+ Gemini calls -> quota exhausted.
+
+    Backoff schedule (seconds): 15 -> 30 -> 60 -> 120
+    Total max wait before giving up: ~3.5 minutes.
+    Returns "" on final failure -- callers treat empty string as NEUTRAL.
+    """
+    delay = 15
+    for attempt in range(retries):
+        try:
+            result = client.models.generate_content(
+                model=MODEL_ID,
+                contents=prompt,
+                config={"temperature": temperature},
+            )
+            return result.text.strip()
+        except Exception as e:
+            msg = str(e)
+            if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                if attempt < retries - 1:
+                    print(f"  [nli] 429 quota hit -- waiting {delay}s (attempt {attempt+1}/{retries})")
+                    time.sleep(delay)
+                    delay = min(delay * 2, 120)
+                else:
+                    print(f"  [nli] 429 quota hit -- all retries exhausted, returning empty")
+                    return ""
+            else:
+                print(f"  [nli] Gemini error: {e}")
+                return ""
+    return ""
 
 
 def classify_nli(premise: str, hypothesis: str) -> str:
@@ -35,13 +72,7 @@ def classify_nli(premise: str, hypothesis: str) -> str:
         "Output ONLY one word. No explanation. No punctuation."
     )
 
-    result = client.models.generate_content(
-        model=MODEL_ID,
-        contents=prompt,
-        config={"temperature": 0.1}
-    )
-
-    raw = result.text.strip().upper()
+    raw = _gemini_generate(prompt, temperature=0.1).upper()
     for label in ("ENTAILMENT", "CONTRADICTION", "NEUTRAL"):
         if label in raw:
             return label
@@ -121,13 +152,7 @@ def check_nli_batch(pairs: list[dict]) -> list[dict]:
         f"Return exactly {len(pairs)} objects."
     )
 
-    result = client.models.generate_content(
-        model=MODEL_ID,
-        contents=prompt,
-        config={"temperature": 0.1}
-    )
-
-    raw = result.text.strip()
+    raw = _gemini_generate(prompt, temperature=0.1)
     raw = re.sub(r'^```json?\s*', '', raw)
     raw = re.sub(r'\s*```$', '', raw)
 

@@ -42,7 +42,7 @@ def build_collection(
 
     # domain prefix isolates collections per embedding model
     # "facts_general_albert_einstein" vs "facts_legal_albert_einstein" are separate
-    safe_topic = topic.lower().replace(" ", "_")[:20]
+    safe_topic = topic.lower().replace(" ", "_")[:20].rstrip("_")
     safe_name  = f"facts_{domain}_{safe_topic}"
     collection = _client.get_or_create_collection(name=safe_name)
 
