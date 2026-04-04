@@ -14,6 +14,12 @@ def build_collection(
     embed_fn  = None,       # callable(text: str) -> list[float]
                             # If None: uses Gemini (default_embed)
                             # Module E passes get_embed_fn(domain) here
+    domain:   str = "general",  # NEW — included in collection name to prevent
+                                 # dimension collisions across domains for same topic.
+                                 # Without this: "facts_albert_einstein" built with
+                                 # InLegalBert (768-dim) gets reused when the same
+                                 # topic is re-scored as "general" (Gemini, 3072-dim)
+                                 # → chromadb.InvalidArgumentError at query time.
 ) -> object:
     """
     Creates (or retrieves) a ChromaDB collection for a topic and
@@ -27,11 +33,17 @@ def build_collection(
         MUST match the embed_fn passed to retrieve_closest() for the same collection.
         Using different functions for build vs query produces wrong similarity scores.
 
+    domain: used only to namespace the collection name — prevents the singleton
+        _client from returning a stale 768-dim collection when the domain changes.
+
     Returns: ChromaDB collection object.
     """
     embed_fn = embed_fn or default_embed
 
-    safe_name  = "facts_" + topic.lower().replace(" ", "_")[:20]
+    # domain prefix isolates collections per embedding model
+    # "facts_general_albert_einstein" vs "facts_legal_albert_einstein" are separate
+    safe_topic = topic.lower().replace(" ", "_")[:20]
+    safe_name  = f"facts_{domain}_{safe_topic}"
     collection = _client.get_or_create_collection(name=safe_name)
 
     if collection.count() == 0:

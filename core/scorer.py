@@ -184,7 +184,7 @@ def analyze_text(text: str) -> dict:
         }
 
     # ── Step 6: Build vector store ─────────────────────────────────────
-    collection = build_collection(topic, facts, embed_fn)
+    collection = build_collection(topic, facts, embed_fn, domain=domain)
 
     # ── Step 7: Pre-compute embeddings + closest ───────────────────────
     print(f"\n[scorer] Pre-computing embeddings for {len(sentences)} sentence(s)...")
