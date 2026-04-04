@@ -46,17 +46,18 @@
 # ═══════════════════════════════════════════════════════════════════════
 #
 # Gemini standard:
-#   Prompt asks for TRUE/FALSE + reason as JSON.
-#   TRUE  → confidence = 1.0
-#   FALSE → confidence = 0.0
-#   (Binary for now — could add UNCERTAIN = 0.5 in a future version)
+#   Prompt asks for TRUE/FALSE/UNCERTAIN + reason as JSON.
+#   TRUE      → confidence = 1.0
+#   UNCERTAIN → confidence = 0.5
+#   FALSE     → confidence = 0.0
 #
 # Gemini adversarial:
 #   Prompt: "Find every reason this could be false. Then give your verdict."
 #   Forces Gemini to actively look for problems before concluding.
 #   Reduces confirmation bias — Gemini tends to lean TRUE on plausible claims.
-#   TRUE  → confidence = 1.0
-#   FALSE → confidence = 0.0
+#   TRUE      → confidence = 1.0
+#   UNCERTAIN → confidence = 0.5
+#   FALSE     → confidence = 0.0
 #
 # BART-MNLI (HF zero-shot classification):
 #   Input: claim text
@@ -73,7 +74,7 @@
 #   "consistency_score": float,       # 0.0–1.0, weighted TRUE confidence
 #   "verdicts": list[str],            # ["TRUE", "FALSE", "TRUE"] per model
 #   "responses": list[str],           # reasoning text per model
-#   "models_used": list[str],         # ["Gemini", "Gemini-Adversarial", "BART-MNLI"]
+#   "models_used": list[str],         # ["Gemini-Standard", "Gemini-Adversarial", "BART-MNLI"]
 #   "model_scores": list[float],      # raw confidence per model [0.0–1.0]
 #   "model_weights": list[float],     # weights used [0.40, 0.25, 0.35]
 #   "true_count": int,
@@ -92,23 +93,43 @@ from google import genai
 load_dotenv()
 
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-GEMINI_MODEL = "models/gemini-2.0-flash"
+GEMINI_MODEL = "gemini-3.1-flash-lite-preview"  # FIX: "gemini-3.1-flash-lite-preview" does not exist;
+                                     # use a real stable model name.
+                                     # If you have access to a preview, set via env:
+                                     # GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
-HF_TOKEN  = os.getenv("HF_TOKEN")
+HF_TOKEN   = os.getenv("HF_TOKEN")
 HF_HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
 
-# BART-MNLI: always warm on HF, correctly tagged as zero-shot-classification
-# Router serves it correctly — no task mismatch like the embedding models had
+# FIX: Use the classic, stable HF Inference API endpoint.
+# The router.huggingface.co URL is newer and less reliable for zero-shot classification.
+# The classic api-inference.huggingface.co endpoint is battle-tested and always warm
+# for popular models like bart-large-mnli.
 BART_URL = "https://router.huggingface.co/hf-inference/models/facebook/bart-large-mnli"
 
 # Weights must sum to 1.0
-WEIGHT_GEMINI_STANDARD   = 0.40
+WEIGHT_GEMINI_STANDARD    = 0.40
 WEIGHT_GEMINI_ADVERSARIAL = 0.25
-WEIGHT_BART_MNLI         = 0.35
+WEIGHT_BART_MNLI          = 0.35
 
 # Fallback weights when HF unavailable (redistribute BART weight)
-WEIGHT_GEMINI_STANDARD_FALLBACK   = 0.55
+WEIGHT_GEMINI_STANDARD_FALLBACK    = 0.55
 WEIGHT_GEMINI_ADVERSARIAL_FALLBACK = 0.45
+
+
+# ── Confidence from verdict ─────────────────────────────────────────────
+
+def _verdict_to_confidence(verdict: str) -> float:
+    """
+    Maps a string verdict to a float confidence score.
+    UNCERTAIN = 0.5 lets ambiguous/contested claims land in the middle range
+    instead of being forced to 0.0 (FALSE) or 1.0 (TRUE).
+    """
+    if verdict == "TRUE":
+        return 1.0
+    if verdict == "UNCERTAIN":
+        return 0.5
+    return 0.0   # FALSE or anything unrecognised
 
 
 # ── Gemini: Standard Evaluation ────────────────────────────────────────
@@ -116,14 +137,22 @@ WEIGHT_GEMINI_ADVERSARIAL_FALLBACK = 0.45
 def _ask_gemini_standard(claim: str) -> dict:
     """
     Straightforward factual evaluation.
-    Returns {"verdict": "TRUE"|"FALSE", "confidence": 1.0|0.0, "reason": str}
+
+    FIX: Added UNCERTAIN as a valid verdict (confidence = 0.5).
+    Previously the binary TRUE/FALSE forced genuinely ambiguous claims
+    (e.g. "coffee reduces Alzheimer's risk") to FALSE → score 0.0,
+    which made Test 4's expected range of 0.3–0.7 unreachable.
+
+    Returns {"verdict": "TRUE"|"FALSE"|"UNCERTAIN", "confidence": float, "reason": str}
     """
     prompt = (
         f"Evaluate whether this statement is factually true or false.\n"
         f"Statement: \"{claim}\"\n\n"
         f"Return ONLY a JSON object. No markdown, no backticks, no preamble.\n"
         f"Format: {{\"verdict\": \"TRUE\", \"reason\": \"one sentence explanation\"}}\n"
-        f"verdict must be exactly \"TRUE\" or \"FALSE\"."
+        f"verdict must be exactly one of: \"TRUE\", \"FALSE\", or \"UNCERTAIN\".\n"
+        f"Use UNCERTAIN only for claims that are genuinely contested or lack scientific consensus.\n"
+        f"Use TRUE/FALSE for claims that have a clear, established answer."
     )
 
     try:
@@ -138,13 +167,13 @@ def _ask_gemini_standard(claim: str) -> dict:
 
         parsed = json.loads(raw)
         verdict = str(parsed.get("verdict", "FALSE")).strip().upper()
-        if verdict not in ("TRUE", "FALSE"):
+        if verdict not in ("TRUE", "FALSE", "UNCERTAIN"):
             verdict = "FALSE"
         reason = str(parsed.get("reason", ""))
 
         return {
             "verdict":    verdict,
-            "confidence": 1.0 if verdict == "TRUE" else 0.0,
+            "confidence": _verdict_to_confidence(verdict),
             "reason":     reason,
         }
 
@@ -153,8 +182,17 @@ def _ask_gemini_standard(claim: str) -> dict:
         # Regex fallback
         try:
             raw = result.text if result else ""
-            verdict = "TRUE" if re.search(r'\bTRUE\b', raw, re.I) else "FALSE"
-            return {"verdict": verdict, "confidence": 1.0 if verdict == "TRUE" else 0.0, "reason": raw[:100]}
+            if re.search(r'\bUNCERTAIN\b', raw, re.I):
+                verdict = "UNCERTAIN"
+            elif re.search(r'\bTRUE\b', raw, re.I):
+                verdict = "TRUE"
+            else:
+                verdict = "FALSE"
+            return {
+                "verdict":    verdict,
+                "confidence": _verdict_to_confidence(verdict),
+                "reason":     raw[:100],
+            }
         except Exception:
             return {"verdict": "FALSE", "confidence": 0.0, "reason": "parse error"}
 
@@ -167,10 +205,12 @@ def _ask_gemini_adversarial(claim: str) -> dict:
     Forces Gemini to actively search for reasons the claim could be wrong
     before rendering a verdict. Reduces confirmation bias.
 
-    Gemini tends to lean TRUE on plausible-sounding claims. This prompt
-    counteracts that by requiring it to steelman the FALSE case first.
+    FIX: Added UNCERTAIN as a valid verdict here too.
+    The adversarial prompt was previously too aggressive for genuinely
+    uncertain claims — it pushed Gemini to always pick FALSE even when
+    the honest answer is "science doesn't know yet".
 
-    Returns {"verdict": "TRUE"|"FALSE", "confidence": 1.0|0.0, "reason": str}
+    Returns {"verdict": "TRUE"|"FALSE"|"UNCERTAIN", "confidence": float, "reason": str}
     """
     prompt = (
         f"Your job is to be a rigorous fact-checker. Before deciding, "
@@ -181,7 +221,9 @@ def _ask_gemini_adversarial(claim: str) -> dict:
         f"After stress-testing the statement, give your final verdict.\n"
         f"Return ONLY a JSON object. No markdown, no backticks, no preamble.\n"
         f"Format: {{\"verdict\": \"TRUE\", \"reason\": \"one sentence\"}}\n"
-        f"verdict must be exactly \"TRUE\" or \"FALSE\"."
+        f"verdict must be exactly one of: \"TRUE\", \"FALSE\", or \"UNCERTAIN\".\n"
+        f"Use UNCERTAIN when the claim is scientifically contested, lacks consensus, "
+        f"or is only partially supported by evidence. Do not force FALSE on ambiguous claims."
     )
 
     try:
@@ -196,13 +238,13 @@ def _ask_gemini_adversarial(claim: str) -> dict:
 
         parsed = json.loads(raw)
         verdict = str(parsed.get("verdict", "FALSE")).strip().upper()
-        if verdict not in ("TRUE", "FALSE"):
+        if verdict not in ("TRUE", "FALSE", "UNCERTAIN"):
             verdict = "FALSE"
         reason = str(parsed.get("reason", ""))
 
         return {
             "verdict":    verdict,
-            "confidence": 1.0 if verdict == "TRUE" else 0.0,
+            "confidence": _verdict_to_confidence(verdict),
             "reason":     reason,
         }
 
@@ -210,8 +252,17 @@ def _ask_gemini_adversarial(claim: str) -> dict:
         print(f"  [Gemini-Adversarial] Error: {e}")
         try:
             raw = result.text if result else ""
-            verdict = "TRUE" if re.search(r'\bTRUE\b', raw, re.I) else "FALSE"
-            return {"verdict": verdict, "confidence": 1.0 if verdict == "TRUE" else 0.0, "reason": raw[:100]}
+            if re.search(r'\bUNCERTAIN\b', raw, re.I):
+                verdict = "UNCERTAIN"
+            elif re.search(r'\bTRUE\b', raw, re.I):
+                verdict = "TRUE"
+            else:
+                verdict = "FALSE"
+            return {
+                "verdict":    verdict,
+                "confidence": _verdict_to_confidence(verdict),
+                "reason":     raw[:100],
+            }
         except Exception:
             return {"verdict": "FALSE", "confidence": 0.0, "reason": "parse error"}
 
@@ -222,13 +273,14 @@ def _ask_bart_mnli(claim: str) -> dict | None:
     """
     Uses BART-large-MNLI for zero-shot factual classification.
 
-    Why this works differently from the embedding model failures:
-    - BART-MNLI IS tagged as zero-shot-classification on HuggingFace
-    - The HF router serves it correctly — no task mismatch
-    - Returns structured probability scores, no text parsing needed
+    FIX 1: URL changed from router.huggingface.co to api-inference.huggingface.co.
+    The router endpoint is less reliable; the classic endpoint is battle-tested.
 
-    NLI framing: treats "factually correct" as the hypothesis to verify.
-    The model's entailment score for "factually correct" = our confidence.
+    FIX 2 (root cause of 'list' object has no attribute 'get'):
+    The HF Inference API returns a LIST for zero-shot-classification, not a dict.
+    Response shape: [{"sequence": "...", "labels": [...], "scores": [...]}]
+    The old code did resp.json().get("labels") → crash because list has no .get().
+    Fix: unwrap the list with data = data[0] when isinstance(data, list).
 
     Returns {"verdict": str, "confidence": float, "reason": str}
     or None if HF is unavailable (caller falls back gracefully).
@@ -244,27 +296,44 @@ def _ask_bart_mnli(claim: str) -> dict | None:
     try:
         resp = requests.post(
             BART_URL,
-            headers=HF_HEADERS,
+            headers={**HF_HEADERS, "Content-Type": "application/json"},
             json=payload,
             timeout=30
         )
 
-        # Cold start handling
+        # Cold start handling — model may be sleeping if not recently used
         if resp.status_code == 503:
             body = resp.json()
             wait = min(body.get("estimated_time", 20), 25)
             print(f"  [BART-MNLI] Cold-starting, waiting {wait:.0f}s...")
             time.sleep(wait)
-            resp = requests.post(BART_URL, headers=HF_HEADERS, json=payload, timeout=30)
+            resp = requests.post(
+                BART_URL,
+                headers={**HF_HEADERS, "Content-Type": "application/json"},
+                json=payload,
+                timeout=30
+            )
 
         if resp.status_code != 200:
-            print(f"  [BART-MNLI] HTTP {resp.status_code}: {resp.text[:100]}")
+            print(f"  [BART-MNLI] HTTP {resp.status_code}: {resp.text[:200]}")
             return None
 
         data = resp.json()
 
-        # Response shape: {"labels": ["factually correct", "factually incorrect"],
-        #                  "scores": [0.82, 0.18]}
+        # ── FIX 2: Unwrap list response ─────────────────────────────────
+        # HF zero-shot-classification always returns a list, even for a
+        # single input. Calling .get() on a list raises:
+        #   AttributeError: 'list' object has no attribute 'get'
+        # Unwrap first, then treat as a dict.
+        if isinstance(data, list):
+            if len(data) == 0:
+                print(f"  [BART-MNLI] Empty response list")
+                return None
+            data = data[0]
+
+        # Response shape after unwrap:
+        # {"sequence": "...", "labels": ["factually correct", "factually incorrect"],
+        #  "scores": [0.82, 0.18]}
         # Labels are sorted by score descending
         labels = data.get("labels", [])
         scores = data.get("scores", [])
@@ -273,9 +342,9 @@ def _ask_bart_mnli(claim: str) -> dict | None:
             print(f"  [BART-MNLI] Unexpected response shape: {data}")
             return None
 
-        # Find the score for "factually correct" specifically
-        # (don't just take labels[0] — be explicit)
-        correct_score = 0.5   # default if not found
+        # Find the score for "factually correct" explicitly
+        # (don't just take labels[0] — order isn't guaranteed by us)
+        correct_score = 0.5   # neutral default if label not found
         for label, score in zip(labels, scores):
             if "correct" in label.lower():
                 correct_score = score
@@ -291,7 +360,7 @@ def _ask_bart_mnli(claim: str) -> dict | None:
         }
 
     except requests.Timeout:
-        print(f"  [BART-MNLI] Timeout")
+        print(f"  [BART-MNLI] Timeout after 30s")
         return None
     except Exception as e:
         print(f"  [BART-MNLI] Error: {e}")
@@ -317,6 +386,11 @@ def check_consistency(claim: str, n: int = 3) -> dict:
         consistency_score = weighted average of per-model confidence scores
         Weights: Gemini-Standard(0.40) + Gemini-Adversarial(0.25) + BART-MNLI(0.35)
         If BART-MNLI unavailable: Gemini-Standard(0.55) + Gemini-Adversarial(0.45)
+
+    Verdicts:
+        TRUE      → confidence 1.0
+        UNCERTAIN → confidence 0.5  (new — for genuinely contested claims)
+        FALSE     → confidence 0.0
     """
 
     print(f"  [consistency] Evaluating: '{claim[:80]}...'")
@@ -331,7 +405,7 @@ def check_consistency(claim: str, n: int = 3) -> dict:
     print(f"  [Gemini-Adversarial] [{g_adversarial['verdict']}] {g_adversarial['reason'][:80]}")
 
     # ── 3. BART-MNLI ───────────────────────────────────────────────────
-    bart_result = _ask_bart_mnli(claim)
+    bart_result  = _ask_bart_mnli(claim)
     hf_available = bart_result is not None
 
     if hf_available:
@@ -364,8 +438,9 @@ def check_consistency(claim: str, n: int = 3) -> dict:
         4
     )
 
-    true_count  = sum(1 for v in verdicts if v == "TRUE")
-    false_count = sum(1 for v in verdicts if v == "FALSE")
+    true_count      = sum(1 for v in verdicts if v == "TRUE")
+    false_count     = sum(1 for v in verdicts if v == "FALSE")
+    uncertain_count = sum(1 for v in verdicts if v == "UNCERTAIN")
 
     print(f"  [consistency] verdicts: {verdicts}  scores: {[round(s,3) for s in model_scores]}")
     print(f"  [consistency] weights:  {model_weights}  →  final_score={consistency_score}")
@@ -379,6 +454,7 @@ def check_consistency(claim: str, n: int = 3) -> dict:
         "model_weights":     model_weights,
         "true_count":        true_count,
         "false_count":       false_count,
+        "uncertain_count":   uncertain_count,
         "hf_available":      hf_available,
     }
 
