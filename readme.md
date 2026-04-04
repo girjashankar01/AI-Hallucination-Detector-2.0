@@ -1,230 +1,302 @@
+# Hallucination Detector 2.0
 
-## Basic Setup
-- virtual python environment : `python3 -m venv .venv`
-- wait for around 30 seconds then, `source .venv/bin/activate`
-- verify via which python i.e in which locn your virtual env. is present; so you can use pip install in same locn without issues.
-- virtual environment in python to ensure portability and that all the pip modules and python are in same path so they could work together and also prevent global contamination by installing several pip moudles
-- it would return sth like : `/Users/althea/Developer/Projects/Hallucination-Detector/.venv/bin/python`
-- first create a .env file and place your api key in that and put that file in gitignore;
-- you should never hardcode API keys in source code
-- Methods to use your api key without putting in src code
-    1. `export GEMINI_API_KEY=xyz`
-    python core/embedder.py  # os.getenv() works 
-    but this is temporary, you have to export for each session
-    2. using dotenv moudle: .env file can't be read directly 
-    from dotenv import load_dotenv
-    load_dotenv()  # reads .env, injects into os.environ
-    os.getenv("GEMINI_API_KEY")  # → "xyz"
-    Bash command `echo "GEMINI_API_KEY=your_key_here" >> .env`
+Detects and flags hallucinated claims in LLM-generated text by grounding output against authoritative sources using four independent signals — NLI classification, self-consistency, vector similarity, and embedding similarity.
 
-## Module 1: embedder
-- using gemini embedding model 001, it compares meaning of diff. words/sentences; 
-- each words or sentence is split it into diff. tokens then each of them give diff. embedding(vector) in certain diamension like this one give vector of 3072 dimension; and then at end each combines (sth like weighted avg. of all token vectors) to give a final vector (embedding) that signifies the meaning of that sentence.
-- using cosine similarity it determines, how close (angular seperation) are 2 sentences or words
-- we compare the angle b/w them and return a value b/w [-1,1] for similarity score.
-
-## Module 2: fetcher
-- using wikipedia api, for fetching facts (summary) then splitting it into parts using (re)
-- basic text split using (.) would split incorrectly so using re (regex split)
-    import re
-    re.split(r'(?<=[.!?]) +', text)
-    This says: split on one or more spaces, but only when preceded by . ! or ?
-    its not perfect but this will give about 90% accuracy, using another NLP for it would increase the accuracy but along with that complexity too.
-- Token inference : to determine which wikipedia article to fetch.
-- to fetch: wiki.page("article name e.g Albert Einstein"); the article name to fetch would be figured out by token inference
-- Named Entity Recognition (NER) — identifying the main subject of text. Here using Gemini as a lazy NER system instead of a dedicated NLP model.
-
-## Module 3 : vector_store.py
-- What it does
-    Stores Wikipedia facts as embeddings in ChromaDB (in-memory)
-    Retrieves the N closest facts to a given claim using vector similarity
-    Install
-    pip install chromadb
-- if you directly do for(i in sentences): cosine_similarity(embed(fact),embed(claim)), its naive but works for less no. of sentences but it has very high no. of api calls(=no. of sentences); it doesn't involve any semantic serach, its just brute force linear scan.
-- A vector store solves both:
-    You embed the facts once when building the collection
-    You embed the claim once at query time
-    The store finds the closest facts in one operation instead of looping
-- For 10 facts this difference is small. For 200 facts (full article instead of summary), or when you're scoring 10 sentences in one request, this compounds fast.
-- a vector database stores embeddings, and retrieves them by similarity; under the hood it performs nearest neighbour serach in high dimensional space.
-- it can be used further for semantic serach, RAG, Recommendation system, Duplicate/near Duplicate detection, image search by visual similarity.
-- we are using simplified RAG, retrieve the relevant facts from wikipedia and feed them as context to the scorer.
-
-### Chroma DB:
-- ChromaDB is an open-source vector database. It's the simplest production-grade option — no Docker, no server process, no setup. You pip install chromadb and it works.
-- two modes:
-    Mode 1: In-memory — data dies when process ends: client = chromadb.Client()
-    Mode 2: Persistent — data saved to disk across runs: client = chromadb.PersistentClient(path="./chroma_data")
-    We are using Mode 1. Why: each API request builds a fresh collection from fresh Wikipedia data. Persisting stale data would cause bugs. In-memory is correct here.
-
--The correct command to run this is:
-    python3 -m core.vector_store ; no need to use extension (.py)
-    The -m flag tells Python "run this as a module, not a script." This sets the path correctly so from core.embedder import embed resolves.
-- bcz we are using other scripts as well in core dirctory e.g. embed fn in embedder.py of core.
-- running this module alone will give v.small diff. e.g. 2-4% but we take final weigted avg. after multiple factors, that predicts hallucination reliably.
-
-
-
-
-### Note:
-    - Bash:
-    > (Overwrite): Truncates the target file to 0 bytes before writing standard output. Destructive to existing data.
-    >> (Append): Writes standard output to the end of the file (EOF). Preserves existing data.
-    - in module python-dotevn ; python is included in the name of that module
-    - cmd pallete > restart language server; if modules are note detected
-                  > Reload window
-    - if you see .venv in right of python base(3.13.5) that just indicates you are in that virtual envorment not that your interpretor is that venv
-    - to change that go to select interpretor and then manually enter the path if you don't see it in the list, append /bin/python to the absolute path of .venv directory
-    e.g. `/Users/althea/Developer/Projects/Hallucination-Detector/.venv/bin/python`
-    - avoid using run button of vs code; as that might select a different interpretor; directly run using terminal and entering the path of file manually.
-    - add multiple sleep timer by importing time; so you don't hit api rate limit
-    - RPD(requests per day); RPM (Requests per minute)
-
-
-## Project Structure
-
-```
-hallucination-detector/
-├── .env                  ← API keys (never commit)
-├── .env.example          ← template (commit this)
-├── .gitignore
-├── requirements.txt
-├── api.py                ← FastAPI backend
-├── core/
-│   ├── __init__.py
-│   ├── embedder.py       ← Module 1
-│   ├── fetcher.py        ← Module 2
-│   ├── vector_store.py   ← Module 3
-│   ├── consistency.py    ← Module 4
-│   ├── nli.py            ← Module 5
-│   └── scorer.py         ← Module 6
-└── frontend/
-    ├── index.html
-    ├── style.css
-    └── script.js
-```
-## Architecture (Simple)
-
-```
-Frontend (HTML/CSS/JS)  →  Vercel (free)
-        ↓  fetch() POST
-Backend (FastAPI)       →  Railway (free)
-        ↓
-    3 Detection Modules
-    ├── Wikipedia Grounding
-    ├── Self-Consistency
-    └── Embedding Similarity
-        ↓
-    ChromaDB (in-memory, no setup)
-    Wikipedia API (free, no key)
-    Gemini API (you have key)
-```
-
-## Modules used
-
-1. pip install google-generativeai python-dotenv numpy
-
-    - google-generativeai: The official gRPC/REST Python wrapper for the Gemini API. It abstracts network authentication, payload serialization, and local session state for text, multimodal, and vector embedding models; 
-    this module is no longer supported for our working of project the newer one is google-genai
-    pip uninstall google-generativeai -y
-    pip install google-genai
-
-    - python-dotenv: A configuration parser adhering to the 12-Factor App methodology. It reads local .env files and injects the secrets directly into Python's os.environ, preventing API keys from being hardcoded into version-controlled source files.
-
-    - numpy: A highly optimized, C-backed scientific computing library. It utilizes the ndarray (a homogeneous, contiguous memory block) to execute vectorized matrix mathematics using SIMD CPU instructions, effectively bypassing the Python Global Interpreter Lock (GIL).
-
-    - wikiapi : fetches wiki articles in json format and then we retrieve summary section of that for fact checking.
----
-
-## Project Structure: 
-
-hallucination-detector/
-├── .env                    ← API keys — never commit
-├── .env.example
-├── .gitignore
-├── requirements.txt
-├── Procfile                ← Railway: web: uvicorn api:app --host 0.0.0.0 --port $PORT
-├── runtime.txt             ← python-3.11
-├── api.py                  ← FastAPI backend
-├── core/
-│   ├── __init__.py
-│   ├── embedder.py         ← embed() + cosine_similarity()
-│   ├── fetcher.py          ← fetch_facts() + infer_topic()
-│   ├── vector_store.py     ← build_collection() + retrieve_closest()
-│   ├── consistency.py      ← 3x generation + pairwise embed similarity
-│   ├── llm_evaluator.py    ← NLI + confidence in one Gemini call
-│   └── scorer.py           ← orchestration layer
-└── frontend/
-    ├── index.html
-    ├── style.css
-    └── script.js
-    
-
-
-
-# Hallucination Detector
-
-Detects and flags hallucinated claims in LLM-generated text by grounding output against Wikipedia facts using four independent signals — vector similarity, self-consistency, embedding similarity, and NLI classification.
-
-Built for a hackathon submission. Live demo hosted on Vercel + Railway.
+Domain-aware: automatically routes medical claims to PubMed, legal claims to CourtListener, and general claims to Wikipedia. Each domain uses a specialized embedding model for higher precision.
 
 ---
 
-## Pipeline
+## Output verification (5/5 tests passing)
+
+| Test | Expected domain | Got | Expected label | Got |
+|------|----------------|-----|----------------|-----|
+| Einstein mixed (1 hallucinated + 1 true) | general | general ✓ | mixed | mixed — 1/2 hallucinated ✓ |
+| Einstein fully grounded | general | general ✓ | grounded | mostly grounded ✓ |
+| Satya Nadella won Nobel Prize | general | general ✓ | hallucinated | likely hallucinated ✓ |
+| Amoxicillin antibiotic claim | medical | medical ✓ | grounded | mostly grounded ✓ |
+| Fourth Amendment | legal | legal ✓ | grounded | mostly grounded ✓ |
+
+Source URLs are surfaced per sentence for manual verification:
+- Wikipedia: `https://en.wikipedia.org/wiki/Albert_Einstein`
+- PubMed: `https://pubmed.ncbi.nlm.nih.gov/31811919/`
+- CourtListener: `https://www.courtlistener.com/opinion/2550/...`
+
+---
+
+## Architecture
+
 ```
 INPUT TEXT
-"Einstein won Nobel for relativity. He was born in 1879."
+    │
+    ▼
+┌─────────────────────────┐
+│   Domain Classifier     │  BART-MNLI zero-shot → medical / legal / financial / general
+│   (domain_classifier)   │  Keyword sanity check prevents entity-association misfires
+└────────┬────────────────┘
          │
          ▼
-┌─────────────────────┐
-│   Topic Inference   │  Gemini extracts main entity → "Albert Einstein"
-└────────┬────────────┘
+┌─────────────────────────┐
+│   Topic Inference       │  Gemini extracts the best Wikipedia/source article title
+│   (fetcher)             │  3-tier fallback: exact → search → short query
+└────────┬────────────────┘
          │
          ▼
-┌─────────────────────┐
-│  Wikipedia Fetcher  │  Fetches article summary → splits into ~12 sentences
-└────────┬────────────┘
+┌─────────────────────────┐
+│   Domain Fact Source    │  Routes to authoritative source for the domain:
+│   (sources/)            │  medical → PubMed E-utilities (peer-reviewed abstracts)
+│                         │  legal   → CourtListener (actual court opinions)
+│                         │  general/financial → Wikipedia
+└────────┬────────────────┘
          │
          ▼
-┌─────────────────────┐
-│   ChromaDB (RAM)    │  Embeds all facts → stored as vectors in-memory
-└────────┬────────────┘
-         │
-         ├───────────────────── per sentence ──────────────────────────┐
-         │                                                             │
-         ▼                                                             │
-┌─────────────────────────────────────────────────────────────────┐   │
-│                       SCORING ENGINE                            │   │
-│                                                                 │   │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌───────────────┐  │   │
-│  │Wikipedia Grounding│  │Self-Consistency │  │     NLI       │  │   │
-│  │                  │  │                  │  │               │  │   │
-│  │embed(claim) →    │  │Gemini 3x at      │  │Gemini labels  │  │   │
-│  │ChromaDB query →  │  │temp=0.8 → embed  │  │each fact as:  │  │   │
-│  │closest fact      │  │responses →       │  │ENTAILMENT /   │  │   │
-│  │                  │  │pairwise cosine   │  │NEUTRAL /      │  │   │
-│  │1/(1+distance)    │  │avg = score       │  │CONTRADICTION  │  │   │
-│  │→ grounding_score │  │                  │  │→ nli_score    │  │   │
-│  └────────┬─────────┘  └────────┬─────────┘  └───────┬───────┘  │   │
-│           │                     │                     │         │   │
-│           └─────────────────────┼─────────────────────┘         │   │
-│                                 ▼                               │   │
-│   final = grounding*0.15 + consistency*0.35 + embedding*0.10    │   │
-│         + nli*0.4                                               │   │
-│                                                                 │   │
-│   label = "hallucinated" if final < 0.45 else "grounded"        │   │
-└─────────────────────────────────────────────────────────────────┘   │
-                                  └───────────────────────────────────┘
+┌─────────────────────────┐
+│   Domain Embedder       │  Selects the right embedding model:
+│   (domain_embedder)     │  medical   → NeuML/pubmedbert-base-embeddings (768-dim, local)
+│                         │  legal     → law-ai/InLegalBert (768-dim, local)
+│                         │  financial → ProsusAI/finbert (768-dim, local)
+│                         │  general   → Gemini gemini-embedding-001 (3072-dim, API)
+└────────┬────────────────┘
          │
          ▼
-┌─────────────────────┐
-│   FastAPI Backend   │  POST /analyze → returns JSON
-└────────┬────────────┘
+┌─────────────────────────┐
+│   ChromaDB Collection   │  Facts embedded in 1 batch call and stored in-memory
+│   (vector_store)        │  Namespaced by domain to prevent dimension collisions
+└────────┬────────────────┘
+         │
+         ├──────────────── per sentence ────────────────────┐
+         ▼                                                  │
+┌────────────────────────────────────────────────────────┐  │
+│                    SCORING ENGINE                      │  │
+│                                                        │  │
+│  NLI (0.40)          Consistency (0.35)                │  │
+│  ─────────────       ────────────────────              │  │
+│  Gemini labels       Gemini Standard + Adversarial     │  │
+│  each source fact    + BART-MNLI weighted vote         │  │
+│  as ENTAILMENT /     All 3 independently assess        │  │
+│  NEUTRAL /           TRUE / FALSE / UNCERTAIN          │  │
+│  CONTRADICTION       → consistency_score               │  │
+│  → nli_score                                           │  │
+│                                                        │  │
+│  Grounding (0.15)    Embedding (0.10)                  │  │
+│  ─────────────       ──────────────                    │  │
+│  1/(1+distance)      cosine_similarity                 │  │
+│  from ChromaDB       (claim_vec, fact_vec)             │  │
+│  → grounding_score   → embedding_score                 │  │
+│                                                        │  │
+│  final = nli*0.40 + consistency*0.35                   │  │
+│        + grounding*0.15 + embedding*0.10               │  │
+│                                                        │  │
+│  Hard caps:                                            │  │
+│    CONTRADICTION → cap at 0.25                         │  │
+│    All-FALSE consistency → cap at 0.30                 │  │
+│                                                        │  │
+│  label = "hallucinated" if final < 0.45                │  │
+└────────────────────────────────────────────────────────┘  │
+         └──────────────────────────────────────────────────┘
          │
          ▼
-┌─────────────────────┐
-│  Frontend (JS)      │  Sentences highlighted red / green
-│                     │  Click → show evidence + consistency responses
-└─────────────────────┘
+┌─────────────────────────┐
+│   FastAPI Backend       │  POST /analyze → JSON
+│   (api.py)              │  Sentence-level scores + source URLs
+└────────┬────────────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│   Frontend              │  Sentences highlighted red/green
+│   (frontend/)           │  Click → evidence + source URL + consistency trace
+└─────────────────────────┘
+```
 
+---
 
+## Project structure
+
+```
+hallucination-detector/
+├── .env                        ← API keys — never commit
+├── .env.example                ← template (commit this)
+├── .gitignore
+├── requirements.txt
+├── Procfile                    ← Railway: web: uvicorn api:app --host 0.0.0.0 --port $PORT
+├── runtime.txt                 ← python-3.11
+├── api.py                      ← FastAPI backend
+├── core/
+│   ├── __init__.py
+│   ├── embedder.py             ← embed() + embed_batch() + cosine_similarity()
+│   ├── domain_embedder.py      ← domain-specific model routing + batch support
+│   ├── domain_classifier.py    ← BART-MNLI zero-shot + Gemini fallback
+│   ├── fetcher.py              ← infer_topic() + fetch_facts() with 3-tier fallback
+│   ├── vector_store.py         ← build_collection() + retrieve_closest()
+│   ├── consistency.py          ← multi-model consensus (Gemini ×2 + BART-MNLI)
+│   ├── nli.py                  ← NLI classification + batch with retry
+│   ├── scorer.py               ← orchestration layer
+│   └── sources/
+│       ├── __init__.py         ← domain router
+│       ├── wikipedia_source.py ← Wikipedia adapter
+│       ├── pubmed_source.py    ← PubMed E-utilities
+│       └── legal_source.py     ← CourtListener opinions
+└── frontend/
+    ├── index.html
+    ├── style.css
+    └── script.js
+```
+
+---
+
+## Setup
+
+```bash
+# 1. Create and activate virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Verify you're in the right environment
+which python
+# → /path/to/project/.venv/bin/python
+
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. Create .env with your API keys
+echo "GEMINI_API_KEY=your_key_here" >> .env
+echo "HF_TOKEN=your_token_here" >> .env        # optional — higher HF rate limits
+
+# 4. Run a test
+python3 -m core.scorer
+```
+
+> **VS Code tip:** Use the terminal directly rather than the Run button. If modules aren't detected, open Command Palette → `Python: Select Interpreter` → enter the full path to `.venv/bin/python`. If imports still fail, try `Restart Language Server` or `Reload Window`.
+
+---
+
+## Environment variables
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `GEMINI_API_KEY` | Yes | Gemini API (embeddings, NLI, consistency, topic inference) |
+| `HF_TOKEN` | No | HuggingFace token — increases BART-MNLI rate limits |
+| `COURTLISTENER_TOKEN` | No | CourtListener token — higher rate limits for legal domain |
+
+---
+
+## Domain routing
+
+The pipeline classifies input text into one of four domains before fetching facts. This determines both the fact source and the embedding model.
+
+| Domain | Classifier trigger | Fact source | Embedding model | Dim |
+|---|---|---|---|---|
+| medical | Clinical vocabulary (patient, drug, infection, mg...) | PubMed abstracts | NeuML/pubmedbert-base-embeddings | 768 |
+| legal | Legal vocabulary (court, defendant, amendment, statute...) | CourtListener opinions | law-ai/InLegalBert | 768 |
+| financial | Financial vocabulary (stock, revenue, EBITDA, basis points...) | Wikipedia | ProsusAI/finbert | 768 |
+| general | Fallback — no strong domain signal | Wikipedia | Gemini gemini-embedding-001 | 3072 |
+
+Domain-specific local models download automatically on first run (~440MB each) and cache to `~/.cache/huggingface/hub/`.
+
+Pre-warm before a demo to avoid cold-start delay:
+```bash
+python3 -m core.domain_embedder
+```
+
+---
+
+## Scoring
+
+Each sentence in the input text receives four sub-scores, then a weighted final score:
+
+| Signal | Weight | How it works |
+|---|---|---|
+| NLI | 0.40 | Gemini classifies each source fact as ENTAILMENT / NEUTRAL / CONTRADICTION against the claim. Hard cap: CONTRADICTION → final ≤ 0.25 |
+| Self-consistency | 0.35 | Three independent models vote TRUE/FALSE/UNCERTAIN: Gemini Standard (0.40), Gemini Adversarial (0.25), BART-MNLI (0.35). Weighted average of TRUE confidence scores |
+| Grounding | 0.15 | `1 / (1 + ChromaDB_distance)` — how close the nearest source fact is in vector space |
+| Embedding similarity | 0.10 | Cosine similarity between claim vector and closest fact vector, normalized to [0,1] |
+
+`final < 0.45` → `hallucinated`. Otherwise → `grounded`.
+
+Overall label logic:
+- All sentences hallucinated → `"likely hallucinated"`
+- Some hallucinated → `"mixed — N/M sentence(s) hallucinated"`
+- None hallucinated → `"mostly grounded"`
+
+---
+
+## API reference
+
+**`POST /analyze`**
+
+Request body:
+```json
+{ "text": "Einstein won the Nobel Prize for the theory of relativity." }
+```
+
+Response:
+```json
+{
+  "topic": "Albert Einstein",
+  "domain": "general",
+  "overall_score": 0.56,
+  "overall_label": "mixed — 1/2 sentence(s) hallucinated",
+  "sentence_count": 2,
+  "hallucinated_count": 1,
+  "grounded_count": 1,
+  "results": [
+    {
+      "sentence": "Einstein won the Nobel Prize for the theory of relativity.",
+      "final_score": 0.1839,
+      "label": "hallucinated",
+      "nli_verdict": "CONTRADICTION",
+      "evidence": "Einstein was awarded the 1921 Nobel Prize in Physics for his discovery of the law of the photoelectric effect.",
+      "evidence_source": "Wikipedia",
+      "evidence_url": "https://en.wikipedia.org/wiki/Albert_Einstein",
+      "consistency_score": 0.003,
+      "grounding_score": 0.42,
+      "embedding_score": 0.71,
+      "contradicting_fact": "Einstein was awarded the 1921 Nobel Prize..."
+    }
+  ]
+}
+```
+
+---
+
+## Dependencies
+
+```
+google-genai           Gemini API (embeddings, NLI, consistency, topic inference)
+transformers           Local BERT-family models for domain-specific embeddings
+torch                  Model inference (MPS on Apple Silicon, CUDA on NVIDIA, CPU fallback)
+chromadb               In-memory vector database for fact retrieval
+wikipedia-api          Wikipedia article fetching
+requests               HTTP client (PubMed, CourtListener, BART-MNLI)
+fastapi + uvicorn      REST API backend
+python-dotenv          .env file loading
+numpy                  Cosine similarity computation
+```
+
+Install all:
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## Known limitations
+
+- **Free-tier Gemini quota (15 RPM):** Running all 5 test cases consecutively hits the quota around test 4–5. The pipeline handles this with exponential backoff and fallback weight redistribution — it degrades gracefully but slows down. Upgrade to a paid tier or add `time.sleep()` between tests.
+- **ChromaDB is in-memory:** Collections reset every run. This is intentional — stale cached facts would cause incorrect grounding. Repeated scoring of the same topic within one session reuses the collection efficiently.
+- **Domain models are large:** The three local BERT models total ~1.3GB on first download. Subsequent runs load from disk cache in 2–5 seconds each.
+- **CourtListener snippets are sometimes procedural:** The legal source filters case metadata noise, but very niche legal topics may still return few substantive sentences. The pipeline falls back to Wikipedia automatically if fewer than 2 facts are extracted.
+- **NLI NEUTRAL on off-topic facts:** When the domain classifier routes correctly but the fetched facts don't directly address the specific claim (e.g. a claim about a specific Nobel Prize fact, where Wikipedia returns biographical facts), NLI returns NEUTRAL. The consistency signal carries the hallucination detection in these cases.
+
+---
+
+## Deployment
+
+**Backend — Railway:**
+```
+Procfile:    web: uvicorn api:app --host 0.0.0.0 --port $PORT
+runtime.txt: python-3.11
+```
+Set `GEMINI_API_KEY` in Railway environment variables.
+
+**Frontend — Vercel:**
+Deploy the `frontend/` folder. Update the API base URL in `script.js` to your Railway deployment URL.
