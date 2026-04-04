@@ -59,12 +59,23 @@
 #   UNCERTAIN → confidence = 0.5
 #   FALSE     → confidence = 0.0
 #
-# BART-MNLI (HF zero-shot classification):
-#   Input: claim text
-#   Labels: ["factually correct", "factually incorrect"]
-#   Output: probability distribution over labels
-#   confidence = P("factually correct") directly — a real float, not just 0/1
-#   This is the only source that gives genuine calibrated confidence.
+# BART-MNLI (HF premise-grounded NLI):
+#   Step 1 — Gemini generates a short authoritative factual premise about the topic.
+#   Step 2 — BART zero-shot classification:
+#     inputs             = premise  (the known fact, as a plain string)
+#     candidate_labels   = ["true", "false"]
+#     hypothesis_template = "The following statement is {}: <claim>"
+#   Internally BART runs NLI:
+#     does premise entail "claim is true"? → high score → TRUE
+#     does premise entail "claim is false"? → high score → FALSE
+#   confidence = P("true") — a real float, not a hard 0/1
+#
+# WHY NOT {"text": premise, "text_pair": claim}:
+#   The HF router (router.huggingface.co) strictly requires `inputs` to be a
+#   string, not a dict. Passing {"text":..., "text_pair":...} causes the router
+#   to reject the payload — this was the bug in the previous version that made
+#   HF always unavailable. The hypothesis_template approach achieves identical
+#   NLI semantics while satisfying the router's string-inputs requirement.
 #
 # ═══════════════════════════════════════════════════════════════════════
 # OUTPUT SCHEMA
@@ -93,7 +104,7 @@ from google import genai
 load_dotenv()
 
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-GEMINI_MODEL = os.getenv("GEMINI_MODEL","gemini-3.1-flash-lite-preview")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
 
 HF_TOKEN   = os.getenv("HF_TOKEN")
 HF_HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
@@ -266,29 +277,57 @@ def _ask_gemini_adversarial(claim: str) -> dict:
 
 def _get_fact_premise(claim: str) -> str | None:
     """
-    Asks Gemini to produce a short, authoritative factual statement about
-    the same topic as the claim — without referencing the claim itself.
+    Asks Gemini to produce a short, authoritative factual sentence that
+    directly addresses the specific assertion in the claim.
+
+    KEY REQUIREMENT: the premise must name the same person / entity / event
+    the claim mentions and state the verified, correct detail about them.
+    A generic background fact (e.g. "The Nobel Prize is awarded annually…")
+    is useless — it gives BART no signal to detect contradiction.
 
     This becomes the NLI premise fed to BART. BART then measures whether
-    the claim (hypothesis) is entailed by, neutral to, or contradicted by
-    the known fact (premise).
+    the claim is supported or refuted by that known fact.
 
-    Example:
+    Examples:
       Claim:   "Einstein won the Nobel Prize for the theory of relativity"
-      Premise: "Einstein won the 1921 Nobel Prize in Physics for his
+      Good:    "Einstein won the 1921 Nobel Prize in Physics for his
                 discovery of the law of the photoelectric effect."
-      Result:  BART sees the claim contradicts the premise → low entailment score
+      Bad:     "The Nobel Prize in Physics is awarded annually."   ← no signal
+
+      Claim:   "Satya Nadella won the Nobel Prize in Economics"
+      Good:    "Satya Nadella is the CEO of Microsoft and has not been
+                awarded a Nobel Prize in Economics or any other field."
+      Bad:     "The Nobel Memorial Prize in Economic Sciences is awarded
+                by the Royal Swedish Academy."   ← no signal
 
     Returns a one-sentence string or None if Gemini fails.
     """
     prompt = (
-        f"Write one factual sentence about the topic in this claim. "
-        f"Do not mention whether the claim is true or false — just state "
-        f"a relevant, verifiable fact from authoritative sources."
-
-        f"Claim: {claim}"
-
-        f"Reply with only the factual sentence. No preamble, no quotes.")
+        f"Write one factual sentence that states the ground truth about the "
+        f"specific assertion in this claim.\n\n"
+        f"Rules:\n"
+        f"  • Name the same person, award, event, or entity the claim mentions.\n"
+        f"  • State the verified, correct detail — be SPECIFIC and COMPLETE.\n"
+        f"    If the claim is about what prize someone won, name the ACTUAL prize reason.\n"
+        f"    If the claim is about a role or achievement, state what they ACTUALLY hold/did.\n"
+        f"    If they never received an award, explicitly say so.\n"
+        f"  • Your sentence must contain enough information to CONFIRM or CONTRADICT the claim.\n"
+        f"  • Do NOT write vague or partial facts that leave the claim unresolved.\n"
+        f"  • Do NOT write generic background sentences that omit the subject.\n\n"
+        f"Examples:\n"
+        f"  Claim: 'Einstein won the Nobel Prize for the theory of relativity'\n"
+        f"  Good:  'Einstein won the 1921 Nobel Prize in Physics for his discovery of the "
+        f"law of the photoelectric effect, not for the theory of relativity.'\n"
+        f"  Bad:   'Einstein was awarded the 1921 Nobel Prize for services to theoretical "
+        f"physics.'  ← too vague, doesn't resolve the relativity question\n\n"
+        f"  Claim: 'Satya Nadella won the Nobel Prize in Economics'\n"
+        f"  Good:  'Satya Nadella is the CEO of Microsoft and has never been awarded a "
+        f"Nobel Prize in Economics or any other field.'\n"
+        f"  Bad:   'Satya Nadella serves as chairman and CEO of Microsoft.'  "
+        f"← says nothing about Nobel\n\n"
+        f"Claim: {claim}\n\n"
+        f"Reply with only the factual sentence. No preamble, no quotes."
+    )
     try:
         result = client.models.generate_content(
             model=GEMINI_MODEL,
@@ -302,42 +341,51 @@ def _get_fact_premise(claim: str) -> str | None:
         return None
 
 
-# ── BART-MNLI: NLI Entailment Check ────────────────────────────────────
+# ── BART-MNLI: Premise-Grounded NLI Entailment Check ───────────────────
 
 def _ask_bart_mnli(claim: str) -> dict | None:
     """
-    Uses BART-large-MNLI as an NLI entailment checker, not a zero-shot
-    text classifier.
+    Uses BART-large-MNLI for premise-grounded NLI entailment checking.
 
-    WHY THE OLD APPROACH WAS WRONG:
-    Feeding the claim alone with labels ["factually correct", "factually
-    incorrect"] makes BART measure whether the sentence *sounds like* a
-    correct statement — not whether it *is* factually true. Fluent,
-    confident-sounding false claims (e.g. "Einstein won the Nobel for
-    relativity") score high on "factually correct" because BART has no
-    world knowledge in that mode — it just measures label entailment
-    from surface features.
+    WHY THE OLD {"text": premise, "text_pair": claim} APPROACH WAS BROKEN:
+    The HF router (router.huggingface.co) strictly requires `inputs` to be a
+    plain string. Passing a dict like {"text": ..., "text_pair": ...} causes
+    the router to reject the payload entirely — this was the bug that made
+    hf_available always False in the previous version.
 
-    THE RIGHT APPROACH — premise/hypothesis NLI:
-    1. Ask Gemini to generate a short authoritative fact about the topic.
-    2. Feed that as the NLI premise.
-    3. Feed the claim as the hypothesis.
-    4. BART measures: does the premise ENTAIL the hypothesis?
-       - Entailment score high → claim is consistent with known fact → TRUE
-       - Contradiction score high → claim conflicts with known fact → FALSE
-       - Neutral → BART can't tell → fall back to 0.5
+    THE FORMAT — hypothesis_template approach:
+    We keep the correct two-step NLI logic (Gemini generates premise, BART
+    checks entailment) but deliver it in the format the router accepts:
+
+      inputs             = premise           ← plain string ✓
+      candidate_labels   = ["supported", "refuted"]
+      hypothesis_template = "The claim that <claim> is {}."
+
+    Internally BART runs NLI for each label:
+      • "The claim that <claim> is supported."  vs premise
+      • "The claim that <claim> is refuted."    vs premise
+    Score for "supported" = confidence the claim is consistent with the premise.
+
+    WHY "supported/refuted" INSTEAD OF "true/false":
+    Earlier we used ["true", "false"] with template "The following statement
+    is {}: <claim>". BART struggled to detect contradiction with this framing
+    because "true/false" are abstract meta-labels — BART would latch onto
+    surface token overlap (e.g. both premise and claim mention Nobel+Einstein)
+    and score "true" high even when the reason differed (relativity vs
+    photoelectric effect). "supported/refuted" are semantically richer NLI
+    words BART was trained on, making it much more sensitive to actual
+    premise-hypothesis contradiction.
 
     Response shape from router (flat list, sorted by score desc):
-      [{"label": "entailment", "score": 0.85},
-       {"label": "neutral",    "score": 0.10},
-       {"label": "contradiction", "score": 0.05}]
+      [{"label": "refuted",    "score": 0.85},
+       {"label": "supported",  "score": 0.15}]
 
     URL: router.huggingface.co — the only supported endpoint (classic 410 Gone).
 
     Returns {"verdict": str, "confidence": float, "reason": str} or None.
     """
 
-    # Step 1: generate a factual premise via Gemini
+    # Step 1: generate a targeted factual premise via Gemini
     premise = _get_fact_premise(claim)
     if not premise:
         print(f"  [BART-MNLI] Could not generate premise, skipping")
@@ -345,13 +393,29 @@ def _ask_bart_mnli(claim: str) -> dict | None:
 
     print(f"  [BART-MNLI] Premise: {premise[:90]}")
 
-    # Step 2: NLI call — premise vs hypothesis
-    # The router's text-classification pipeline for bart-large-mnli expects:
-    #   inputs: {"text": premise, "text_pair": hypothesis}
+    # Step 2: NLI via zero-shot classification
+    #
+    # `inputs` = premise (plain string — router requires this)
+    # The claim is embedded in hypothesis_template so BART performs genuine
+    # premise-vs-hypothesis NLI. Template must have exactly one {} slot.
+    # BART formats: template.format("supported") / template.format("refuted")
+    #
+    # This is real NLI: does the factual premise entail or refute the claim?
+    # "supported"/"refuted" are semantically close to NLI-native labels
+    # (entailment/contradiction) that BART was trained on — much better signal
+    # than surface token overlap from concatenation.
+    #
+    # Example:
+    #   premise  : "Einstein won the 1921 Nobel Prize for the photoelectric effect."
+    #   hypothesis: "The claim that 'Einstein won Nobel for relativity' is supported."
+    #   → BART correctly scores "supported" LOW (facts differ despite shared tokens)
+
     payload = {
-        "inputs": {
-            "text":      premise,
-            "text_pair": claim,
+        "inputs": premise,
+        "parameters": {
+            "candidate_labels":   ["supported", "refuted"],
+            "hypothesis_template": f'The claim that "{claim}" is {{}}.',
+            "multi_label":        False,
         }
     }
 
@@ -382,30 +446,28 @@ def _ask_bart_mnli(claim: str) -> dict | None:
         data = resp.json()
 
         # Router returns flat list sorted by score desc:
-        # [{"label": "entailment", "score": 0.85}, ...]
+        # [{"label": "contradictory", "score": 0.85},
+        #  {"label": "consistent",    "score": 0.15}]
         if not isinstance(data, list) or len(data) == 0:
             print(f"  [BART-MNLI] Unexpected response shape: {data}")
             return None
 
-        scores = {item["label"].lower(): item["score"] for item in data}
-        entailment    = scores.get("entailment",    0.0)
-        contradiction = scores.get("contradiction", 0.0)
-        neutral       = scores.get("neutral",       0.0)
-        top_label     = data[0]["label"]
+        supported_score = 0.5   # neutral default if label not found
+        top_label       = data[0].get("label", "unknown")
 
-        # Convert NLI scores to a single TRUE confidence:
-        # entailment → 1.0, contradiction → 0.0, neutral → 0.5
-        # Weighted blend so partial entailment/contradiction still moves the needle
-        confidence = (entailment * 1.0) + (neutral * 0.5) + (contradiction * 0.0)
-        confidence = round(min(max(confidence, 0.0), 1.0), 4)
+        for item in data:
+            if item.get("label", "").lower() == "supported":
+                supported_score = item.get("score", 0.5)
+                break
 
-        verdict = "TRUE" if confidence >= 0.6 else ("FALSE" if confidence <= 0.4 else "UNCERTAIN")
+        # Thresholds: ≥0.6 = TRUE, ≤0.4 = FALSE, else UNCERTAIN
+        verdict = "TRUE" if supported_score >= 0.6 else ("FALSE" if supported_score <= 0.4 else "UNCERTAIN")
 
         return {
             "verdict":    verdict,
-            "confidence": confidence,
-            "reason":     (f"NLI: entailment={entailment:.3f} neutral={neutral:.3f} "
-                          f"contradiction={contradiction:.3f} top='{top_label}'"),
+            "confidence": round(supported_score, 4),
+            "reason":     (f"NLI (hypothesis_template): P(supported)={supported_score:.3f}, "
+                           f"top='{top_label}'"),
         }
 
     except requests.Timeout:
