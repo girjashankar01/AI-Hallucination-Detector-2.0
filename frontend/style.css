@@ -951,16 +951,22 @@ textarea::placeholder {
 /* ───── SOURCE CITATION LINK ───── */
 .src-link {
     display: inline-block;
-    margin-top: 6px;
+    margin-top: 8px;
     font-family: var(--mono);
     font-size: 10px;
     color: var(--green);
-    text-decoration: none;
-    opacity: 0.65;
-    transition: opacity 0.15s;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    text-decoration-color: rgba(0,255,136,0.3);
+    opacity: 0.75;
+    transition: opacity 0.15s, text-decoration-color 0.15s;
+    cursor: pointer;
+    position: relative;
+    z-index: 5;
+    padding: 4px 0;
 }
 
-.src-link:hover { opacity: 1; text-decoration: underline; }
+.src-link:hover { opacity: 1; text-decoration-color: currentColor; }
 
 .src-label {
     display: inline-block;

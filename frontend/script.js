@@ -20,7 +20,7 @@ $('pasteBtn').addEventListener('click', async () => {
     try {
         const text = await navigator.clipboard.readText();
         if (text) {
-            textarea.value = text.slice(0, 500);
+            textarea.value = text.slice(0, 2000);
             textarea.dispatchEvent(new Event('input'));
             textarea.focus();
         }
@@ -61,41 +61,131 @@ textarea.addEventListener('keydown', (e) => {
 // ── char counter ──────────────────────────────────────────
 textarea.addEventListener('input', () => {
     const n = textarea.value.length;
-    charEl.textContent = `${n} / 500`;
-    charEl.className = 'char-count' + (n > 450 ? ' over' : n > 350 ? ' warn' : '');
+    charEl.textContent = `${n} / 2000`;
+    charEl.className = 'char-count' + (n > 1900 ? ' over' : n > 1700 ? ' warn' : '');
     validateInput(textarea.value);
 });
 
-// ── loading steps — domain-aware ──────────────────────────
-let _loadDomain = 'general';
+// ── Frontend domain prediction ────────────────────────────
+// Mirrors backend's DOMAIN_KEYWORDS for instant domain prediction
+// so loading messages show the correct source before the server responds.
+const DOMAIN_KEYWORDS = {
+    medical: [
+        'patient', 'drug', 'treatment', 'disease', 'symptom', 'clinical',
+        'therapy', 'diagnosis', 'mg', 'dosage', 'antibiotic', 'surgery',
+        'hospital', 'infection', 'vaccine', 'cancer', 'tumor', 'cells',
+        'blood', 'heart', 'lung', 'kidney', 'liver', 'medication', 'dose',
+        'trial', 'placebo', 'mortality', 'morbidity', 'pathogen', 'viral',
+        'bacterial', 'chronic', 'acute', 'physician', 'nurse',
+    ],
+    legal: [
+        'court', 'law', 'defendant', 'plaintiff', 'verdict', 'statute',
+        'attorney', 'legal', 'precedent', 'amendment', 'constitution',
+        'ruling', 'judge', 'jury', 'evidence', 'testimony', 'appeal',
+        'sentence', 'conviction', 'acquittal', 'legislation', 'regulation',
+        'contract', 'liability', 'jurisdiction', 'prosecutor', 'counsel',
+        'habeas', 'injunction', 'petition', 'constitutional',
+    ],
+    financial: [
+        'stock', 'revenue', 'earnings', 'market', 'investment', 'dividend',
+        'equity', 'portfolio', 'interest rate', 'gdp', 'fiscal', 'ebitda',
+        'financial', 'profit', 'loss', 'balance sheet', 'cash flow', 'debt',
+        'bond', 'fund', 'asset', 'liability', 'inflation', 'recession',
+        'federal reserve', 'monetary', 'basis points', 'quarter', 'ipo',
+        'merger', 'acquisition', 'valuation', 'shares', 'nasdaq', 'nyse',
+    ],
+};
 
-function getSteps(domain) {
-    const src = { medical: 'PubMed abstracts', legal: 'CourtListener opinions',
-                  financial: 'Wikipedia', general: 'Wikipedia' }[domain] || 'Wikipedia';
+function predictDomain(text) {
+    const lower = text.toLowerCase();
+    let bestDomain = 'general';
+    let bestCount  = 0;
+    for (const [domain, keywords] of Object.entries(DOMAIN_KEYWORDS)) {
+        const count = keywords.filter(kw => lower.includes(kw)).length;
+        if (count > bestCount) { bestCount = count; bestDomain = domain; }
+    }
+    // Require at least 1 keyword match to classify as non-general
+    return bestCount >= 1 ? bestDomain : 'general';
+}
+
+// ── loading steps — domain-aware, linear (no loop) ────────
+function getSteps() {
     return [
-        'Inferring topic from text...',
-        'Fetching ' + src + '...',
-        'Building vector store...',
-        'Running consistency checks...',
-        'Running NLI classification...',
-        'Computing final scores...',
+        'Classifying domain & inferring topic…',
+        'Fetching facts from source…',
+        'Building vector store & embeddings…',
+        'Running NLI classification…',
+        'Running consistency checks…',
+        'Computing final scores…',
     ];
 }
 
-let stepI = 0, stepT;
+// Delays between steps (ms) — roughly match real backend timing.
+// Step 0 starts immediately. Each subsequent step advances after this delay.
+// Total: ~40s before hitting the hold state, typical backend run is 30–90s.
+const STEP_DELAYS = [5000, 6000, 7000, 8000, 9000, 10000];
 
-function stepsOn() {
-    _loadDomain = 'general';
-    stepI = 0;
-    $('loadingStep').textContent = getSteps('general')[0];
-    stepT = setInterval(() => {
-        stepI = (stepI + 1) % 6;
-        const el = $('loadingStep');
-        el.style.opacity = '0';
-        setTimeout(() => { el.textContent = getSteps(_loadDomain)[stepI]; el.style.opacity = '1'; }, 150);
-    }, 3000);
+let _loadDomain = 'general';
+let _stepI = 0;
+let _stepTimers = [];
+let _holdTimer = null;
+
+function stepsOn(text) {
+    // Predict domain from input text for accurate loading messages
+    _loadDomain = predictDomain(text || '');
+    _stepI = 0;
+    _stepTimers = [];
+    _holdTimer = null;
+
+    const steps = getSteps(_loadDomain);
+    const el = $('loadingStep');
+    el.textContent = steps[0];
+    el.style.opacity = '1';
+
+    // Schedule each step linearly — never loops back
+    let cumulative = 0;
+    for (let i = 1; i < steps.length; i++) {
+        cumulative += STEP_DELAYS[i - 1];
+        const idx = i;
+        const t = setTimeout(() => {
+            _stepI = idx;
+            el.style.opacity = '0';
+            setTimeout(() => {
+                el.textContent = steps[idx];
+                el.style.opacity = '1';
+            }, 180);
+        }, cumulative);
+        _stepTimers.push(t);
+    }
+
+    // After all steps shown, add a "still working" pulse on the last step
+    cumulative += STEP_DELAYS[STEP_DELAYS.length - 1];
+    _holdTimer = setTimeout(() => {
+        _startHoldPulse(steps[steps.length - 1]);
+    }, cumulative);
 }
-function stepsOff() { clearInterval(stepT); }
+
+// Pulse the last step text to show it's still alive (not frozen)
+let _pulseTimer = null;
+function _startHoldPulse(baseText) {
+    let dots = 0;
+    const el = $('loadingStep');
+    _pulseTimer = setInterval(() => {
+        dots = (dots + 1) % 4;
+        const suffix = dots === 0 ? ' — still processing'
+                     : dots === 1 ? ' — still processing.'
+                     : dots === 2 ? ' — still processing..'
+                     : ' — still processing...';
+        el.textContent = baseText.replace('…', '') + suffix;
+    }, 1200);
+}
+
+function stepsOff() {
+    _stepTimers.forEach(t => clearTimeout(t));
+    _stepTimers = [];
+    if (_holdTimer) { clearTimeout(_holdTimer); _holdTimer = null; }
+    if (_pulseTimer) { clearInterval(_pulseTimer); _pulseTimer = null; }
+}
 
 // ── input validation ──────────────────────────────────────
 function validateInput(text) {
@@ -129,7 +219,7 @@ async function analyze() {
     loadEl.classList.add('show');
     resEl.classList.remove('show');
     toastEl.classList.remove('show');
-    stepsOn();
+    stepsOn(text);
 
     try {
         const res = await fetch(API + '/analyze', {
@@ -318,9 +408,19 @@ function render(data) {
             + '</div>'
             + '</div>';
 
-        el.addEventListener('click', function() {
+        el.addEventListener('click', function(e) {
+            // Don't toggle card when clicking a link
+            if (e.target.closest('a')) return;
             $('dt-' + i).classList.toggle('open');
             $('ch-' + i).classList.toggle('open');
+        });
+
+        // Make source links clickable — stop propagation so clicking them
+        // doesn't toggle the card, and ensure they open in a new tab
+        el.querySelectorAll('a.src-link').forEach(function(link) {
+            link.addEventListener('click', function(e) {
+                e.stopPropagation();
+            });
         });
 
         list.appendChild(el);

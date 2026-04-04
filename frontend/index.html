@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Hallucination Detector — AI Verification Tool</title>
     <meta name="description" content="Domain-aware factual verification across Wikipedia, PubMed, and CourtListener.">
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=3">
 </head>
 <body>
 
@@ -71,10 +71,10 @@
                     <span>Paste</span>
                 </button>
             </div>
-            <span class="char-count" id="charCount">0 / 500</span>
+            <span class="char-count" id="charCount">0 / 2000</span>
         </div>
         <div class="input-row">
-            <textarea id="inputText" placeholder="Enter LLM-generated text here…" maxlength="500"></textarea>
+            <textarea id="inputText" placeholder="Enter LLM-generated text here…" maxlength="2000"></textarea>
             <button class="btn-run" id="analyzeBtn" onclick="analyze()">
                 <span class="btn-arrow">→</span>
                 <span class="btn-label">Analyze</span>
@@ -88,7 +88,7 @@
 <div id="loading">
     <div class="container loading-row">
         <div class="load-bar"><div class="load-fill"></div></div>
-        <span class="load-text" id="loadingStep">Inferring topic from text…</span>
+        <span class="load-text" id="loadingStep">Classifying domain & inferring topic…</span>
     </div>
 </div>
 
@@ -142,6 +142,6 @@
     <span class="toast-msg" id="errorMsg"></span>
 </div>
 
-<script src="script.js"></script>
+<script src="script.js?v=3"></script>
 </body>
 </html>
