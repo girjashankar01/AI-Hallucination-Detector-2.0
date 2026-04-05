@@ -11,6 +11,41 @@ load_dotenv()
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 MODEL_ID = "gemini-3.1-flash-lite-preview"
 
+import threading
+import time
+
+# ── Rate limiter: 15 RPM = 1 call per 4s ──────────────────────────
+_RATE_LIMIT_RPM = 15
+_MIN_INTERVAL   = 60.0 / _RATE_LIMIT_RPM   # 4.0 seconds between calls
+_last_call_time = 0.0
+_rate_lock      = threading.Lock()
+
+def _rate_limit_wait():
+    """Block until it's safe to make the next Gemini call."""
+    global _last_call_time
+    with _rate_lock:
+        now     = time.monotonic()
+        elapsed = now - _last_call_time
+        wait    = _MIN_INTERVAL - elapsed
+        if wait > 0:
+            time.sleep(wait)
+        _last_call_time = time.monotonic()
+
+def _gemini_generate(prompt: str, temperature: float = 0.1, retries: int = 4) -> str:
+    delay = 15
+    for attempt in range(retries):
+        _rate_limit_wait()          # 👈 add this line
+        try:
+            result = client.models.generate_content(...)
+            return result.text.strip()
+        except Exception as e:
+            msg = str(e)
+            if "PerDay" in msg:     # 👈 also add daily quota guard
+                print("  [nli] Daily quota exhausted — aborting retries")
+                return ""
+            if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                ...                 # existing backoff logic unchanged
+
 
 def _gemini_generate(prompt: str, temperature: float = 0.1, retries: int = 4) -> str:
     """
