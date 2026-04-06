@@ -185,22 +185,23 @@ def _ask_gemini_standard(claim: str) -> dict:
 
     except Exception as e:
         print(f"  [Gemini-Standard] Error: {e}")
-        # Regex fallback
+        # Regex fallback — scan raw text for verdict keywords
         try:
             raw = result.text if result else ""
-            if re.search(r'\bUNCERTAIN\b', raw, re.I):
-                verdict = "UNCERTAIN"
-            elif re.search(r'\bTRUE\b', raw, re.I):
-                verdict = "TRUE"
-            else:
-                verdict = "FALSE"
-            return {
-                "verdict":    verdict,
-                "confidence": _verdict_to_confidence(verdict),
-                "reason":     raw[:100],
-            }
         except Exception:
-            return {"verdict": "FALSE", "confidence": 0.0, "reason": "parse error"}
+            raw = ""
+        if re.search(r'\bUNCERTAIN\b', raw, re.I):
+            verdict = "UNCERTAIN"
+        elif re.search(r'\bTRUE\b', raw, re.I):
+            verdict = "TRUE"
+        else:
+            verdict = "FALSE"
+        reason = raw[:120] if raw else "no response from model"
+        return {
+            "verdict":    verdict,
+            "confidence": _verdict_to_confidence(verdict),
+            "reason":     reason,
+        }
 
 
 # ── Gemini: Adversarial Evaluation ─────────────────────────────────────
@@ -256,21 +257,23 @@ def _ask_gemini_adversarial(claim: str) -> dict:
 
     except Exception as e:
         print(f"  [Gemini-Adversarial] Error: {e}")
+        # Regex fallback — scan raw text for verdict keywords
         try:
             raw = result.text if result else ""
-            if re.search(r'\bUNCERTAIN\b', raw, re.I):
-                verdict = "UNCERTAIN"
-            elif re.search(r'\bTRUE\b', raw, re.I):
-                verdict = "TRUE"
-            else:
-                verdict = "FALSE"
-            return {
-                "verdict":    verdict,
-                "confidence": _verdict_to_confidence(verdict),
-                "reason":     raw[:100],
-            }
         except Exception:
-            return {"verdict": "FALSE", "confidence": 0.0, "reason": "parse error"}
+            raw = ""
+        if re.search(r'\bUNCERTAIN\b', raw, re.I):
+            verdict = "UNCERTAIN"
+        elif re.search(r'\bTRUE\b', raw, re.I):
+            verdict = "TRUE"
+        else:
+            verdict = "FALSE"
+        reason = raw[:120] if raw else "no response from model"
+        return {
+            "verdict":    verdict,
+            "confidence": _verdict_to_confidence(verdict),
+            "reason":     reason,
+        }
 
 
 # ── Gemini: Generate fact premise for NLI ──────────────────────────────

@@ -221,7 +221,7 @@ def _classify_with_gemini(text: str) -> str:
     but always available.
     """
     response = Client.models.generate_content(
-        model="gemini-3.1-flash-lite-preview",
+        model=os.getenv("GEMINI_MODEL"),
         contents=(
             f"Classify this text into exactly one category.\n"
             f"Categories: medical, legal, financial, general\n"

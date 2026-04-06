@@ -84,7 +84,7 @@ def infer_topic(text: str) -> str:
     """
     try:
         response = client.models.generate_content(
-            model="gemini-3.1-flash-lite-preview",
+            model=os.getenv("GEMINI_MODEL"),
             contents=(
                 "Your task is to identify the best Wikipedia article to fact-check the following text.\n"
                 "Rules:\n"

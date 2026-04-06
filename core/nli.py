@@ -9,7 +9,7 @@ from google import genai
 
 load_dotenv()
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-MODEL_ID = "gemini-3.1-flash-lite-preview"
+MODEL_ID = os.getenv("GEMINI_MODEL")
 
 import threading
 import time
@@ -43,7 +43,7 @@ def _gemini_generate(prompt: str, temperature: float = 0.1, retries: int = 4) ->
             if "PerDay" in msg:     # 👈 also add daily quota guard
                 print("  [nli] Daily quota exhausted — aborting retries")
                 return ""
-            if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+            if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "503" in msg or "UNAVAILABLE" in msg:
                 ...                 # existing backoff logic unchanged
 
 

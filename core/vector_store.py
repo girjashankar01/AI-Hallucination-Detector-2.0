@@ -50,9 +50,12 @@ def build_collection(
     # domain prefix isolates collections per embedding model
     import re
     safe_topic = re.sub(r'[^a-zA-Z0-9._-]', '_', topic.lower().replace(" ", "_"))[:20].rstrip("_-")
-    safe_name  = f"facts_{domain}_{safe_topic}"
+    safe_name = f"facts_{domain}_{safe_topic}"
 
-    collection = _client.get_or_create_collection(name=safe_name)
+    collection = _client.get_or_create_collection(
+        name=safe_name,
+        metadata={"hnsw:space": "cosine"},   # cosine distance for text embeddings
+    )                                         # default L2 distorts ranking by magnitude
 
     if collection.count() == 0:
         texts     = [f["text"]   for f in facts]
