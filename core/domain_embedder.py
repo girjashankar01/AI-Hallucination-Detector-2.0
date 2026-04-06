@@ -57,8 +57,8 @@ DOMAIN_MODELS: dict[str, str | None] = {
 # Expected embedding dimensions (used in tests for validation)
 MODEL_DIMS: dict[str, int] = {
     "NeuML/pubmedbert-base-embeddings": 768,
-    "law-ai/InLegalBert":               768,
-    "yiyanghkust/finbert-tone":         768,
+    "law-ai/InLegalBERT":               768,   
+    "ProsusAI/finbert":                 768,   
     "gemini-embedding-001":             3072,
 }
 
@@ -294,7 +294,7 @@ def get_embed_fn(domain: str):
     """
     return lambda text: embed_for_domain(text, domain)
 
-
+fallback_occurred = False # by default assuming false 
 # ── Test ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import time
@@ -468,7 +468,7 @@ if __name__ == "__main__":
 
 
     # ── SUMMARY ───────────────────────────────────────────────────────
-    print(f"\n{'═' * 65}")
+    print(f"{'═' * 65}")
     print("  SUMMARY")
     print(f"{'═' * 65}")
     print("  Test 1: Single embed per domain           — check dims above")
@@ -478,6 +478,16 @@ if __name__ == "__main__":
     print("  Test 4: get_embed_fn interface            — check PASS above")
     print("  Test 5: Cross-domain sanity               — check similarity above")
     print()
-    print("  dim=768 for medical/legal/financial → local models working ✓")
-    print("  dim=3072 for medical/legal/financial → local failed, Gemini fallback active")
+    all_local_passed = all(
+        len(embeddings_cache[(d, "test")]) == 768
+        for d in ["medical", "legal", "financial"]
+    )
+    if all_local_passed:
+        print("  dim=768 for medical/legal/financial → local models working ✓")
+    else:
+        print("  dim=3072 for medical/legal/financial → local failed, Gemini fallback active")
+        for d in ["medical", "legal", "financial"]:
+            dim = len(embeddings_cache[(d, "test")])
+            status = "✓ local" if dim == 768 else "✗ Gemini fallback"
+            print(f"    {d}: dim={dim}  {status}")
     print(f"{'═' * 65}")
