@@ -427,7 +427,7 @@ def _ask_bart_mnli(claim: str) -> dict | None:
             BART_URL,
             headers={**HF_HEADERS, "Content-Type": "application/json"},
             json=payload,
-            timeout=30
+            timeout=15
         )
 
         if resp.status_code == 503:
