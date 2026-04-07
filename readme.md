@@ -105,6 +105,9 @@ It is highly recommended to run this inside an isolated virtual environment to p
 git clone <repository_url>
 cd hallucination-detector
 
+to create the virtual environment in python version-3.11.9
+~/.pyenv/versions/3.11.9/bin/python -m venv .venv
+
 # Create a virtual environment named '.venv'
 python3 -m venv .venv
 
