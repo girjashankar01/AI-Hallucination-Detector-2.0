@@ -28,6 +28,7 @@ Per-Sentence Scoring:
     └── Embedding    (10%) ← how similar is the claim to that fact?
     ↓
 Weighted Score + Hard Caps → grounded / hallucinated
+
 ```
 
 ---
